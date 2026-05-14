@@ -122,6 +122,24 @@ python3 -m pytest backend/tests
 python3 scripts/run_rag_benchmark.py
 ```
 
+## 样例教材测试
+
+本地测试教材可放入 `book_samples/`。该目录下的 PDF 会被 `.gitignore` 排除，不会提交到仓库。可用脚本导入样例教材，并可选构建单本图谱、整合、RAG 索引和报告：
+
+```bash
+python3 scripts/load_book_samples.py --reset-samples --build-graphs --graph-max-chapters 3
+```
+
+常用参数：
+
+- `--reset-samples`：先删除同名样例教材记录，再重新导入。
+- `--limit 1`：只导入前 N 个文件，适合快速 smoke test。
+- `--ocr-max-pages 5`：限制扫描版 PDF 的 OCR 页数。
+- `--graph-max-chapters 3`：限制每本教材构建图谱的章节数。
+- `--integrate --index-rag --report`：继续运行整合、RAG 建索引和 Markdown 报告生成。
+
+前端“教材管理”会显示上传/导入后的原始文件名，以及该教材已生成的图谱节点数和边数。
+
 ## 目录结构
 
 ```text

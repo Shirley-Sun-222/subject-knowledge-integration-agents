@@ -19,6 +19,7 @@ class ReportAgent:
     def collect_data(self) -> dict:
         with connect() as conn:
             textbooks = [row_to_dict(row) for row in conn.execute("SELECT * FROM textbooks ORDER BY created_at")]
+            nodes = {row["id"]: row_to_dict(row) for row in conn.execute("SELECT * FROM knowledge_nodes")}
             node_count = conn.execute("SELECT COUNT(*) AS count FROM knowledge_nodes").fetchone()["count"]
             edge_count = conn.execute("SELECT COUNT(*) AS count FROM knowledge_edges").fetchone()["count"]
             decisions = [row_to_dict(row) for row in conn.execute("SELECT * FROM integration_decisions ORDER BY created_at")]
@@ -27,7 +28,7 @@ class ReportAgent:
             decision["affected_nodes"] = json_loads(decision["affected_nodes"], [])
         original_chars = sum(item["total_chars"] for item in textbooks)
         kept_decisions = [item for item in decisions if item["action"] != "remove"]
-        integrated_chars = min(sum(320 for _ in kept_decisions), int(original_chars * 0.3)) if original_chars else 0
+        integrated_chars = _estimate_integrated_chars(kept_decisions, nodes, original_chars)
         action_counts = {action: sum(1 for item in decisions if item["action"] == action) for action in ["merge", "keep", "remove"]}
         return {
             "textbooks": textbooks,
@@ -153,3 +154,15 @@ def _reportlab_pdf(markdown: str, output: Path) -> None:
             c.showPage()
             y = height - 40
     c.save()
+
+
+def _estimate_integrated_chars(decisions: list[dict], nodes: dict[str, dict], original_chars: int) -> int:
+    total = 0
+    for decision in decisions:
+        result_id = decision.get("result_node") or (decision["affected_nodes"][0] if decision["affected_nodes"] else None)
+        node = nodes.get(result_id) if result_id else None
+        if not node:
+            continue
+        limit = 420 if decision["action"] == "merge" else 360
+        total += min(len(node["definition"]) + len(node["source_excerpt"]), limit)
+    return min(total, int(original_chars * 0.3)) if original_chars else 0

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from backend.app.agents.report import ReportAgent
 from backend.app.config import settings
 from backend.app.db import connect, init_db
 from backend.app.schemas import KnowledgeEdge, KnowledgeNode
@@ -11,6 +12,7 @@ from backend.app.services.graph import build_graph
 from backend.app.services.integration import run_integration
 from backend.app.services.parser import parse_textbook
 from backend.app.services.rag import build_index, query
+from backend.app.services.textbooks import import_textbook_file, list_textbooks
 from backend.app.utils.ids import new_id
 
 
@@ -61,6 +63,8 @@ def test_services_end_to_end(tmp_path: Path) -> None:
         assert graph["nodes"]
         integrated = run_integration()
         assert integrated["decisions"]
+        report_data = ReportAgent().collect_data()
+        assert report_data["integrated_chars"] == integrated["stats"]["integrated_chars"]
         status = build_index()
         assert status["chunk_count"] > 0
         answer = query("快速排序采用什么思想？")
@@ -137,3 +141,47 @@ def test_build_graph_limits_processed_chapters_and_reports_truncation(tmp_path: 
     finally:
         object.__setattr__(settings, "database_url", original_database_url)
         object.__setattr__(settings, "graph_max_chapters", 30)
+
+
+def test_import_textbook_file_preserves_name_and_reports_graph_counts(tmp_path: Path) -> None:
+    original_database_url = settings.database_url
+    original_upload_dir = settings.upload_dir
+    object.__setattr__(settings, "database_url", f"sqlite:///{tmp_path / 'app.db'}")
+    object.__setattr__(settings, "upload_dir", tmp_path / "uploads")
+    settings.upload_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        init_db()
+        source = tmp_path / "样例教材.md"
+        source.write_text("# 第 1 章 绪论\n知识图谱用于表示概念关系。", encoding="utf-8")
+
+        textbook = import_textbook_file(source)
+        chapter = textbook["chapters"][0]
+
+        assert textbook["filename"] == "样例教材.md"
+        assert textbook["title"] == "样例教材"
+        assert textbook["status"] == "completed"
+
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO knowledge_nodes
+                (id, textbook_id, chapter_id, name, definition, category, page, source_excerpt, frequency, metadata)
+                VALUES ('node_count_test', ?, ?, '知识图谱', '定义', '核心概念', 1, '原文', 1, '{}')
+                """,
+                (textbook["id"], chapter["id"]),
+            )
+            conn.execute(
+                """
+                INSERT INTO knowledge_edges (id, textbook_id, source, target, relation_type, description)
+                VALUES ('edge_count_test', ?, 'node_count_test', 'node_count_test', 'parallel', '测试关系')
+                """,
+                (textbook["id"],),
+            )
+
+        listed = list_textbooks()
+
+        assert listed[0]["graph_node_count"] == 1
+        assert listed[0]["graph_edge_count"] == 1
+    finally:
+        object.__setattr__(settings, "database_url", original_database_url)
+        object.__setattr__(settings, "upload_dir", original_upload_dir)

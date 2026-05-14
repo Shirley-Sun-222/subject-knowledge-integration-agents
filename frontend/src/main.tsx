@@ -2,15 +2,27 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { Download, FileText, GitMerge, MessageSquare, Network, Play, Search, UploadCloud } from "lucide-react";
 import { GraphCanvas } from "./components/GraphCanvas";
-import { api, IntegrationResult, KnowledgeNode, RagResponse, Textbook } from "./lib/api";
+import { api, IntegrationResult, KnowledgeEdge, KnowledgeNode, RagResponse, Textbook } from "./lib/api";
 import "./styles.css";
 
 type Tab = "integration" | "rag" | "dialogue" | "report";
+type GraphMode = "empty" | "single" | "integration";
+
+type GraphView = {
+  mode: GraphMode;
+  title: string;
+  metrics?: {
+    processed_chapters?: number;
+    total_chapters?: number;
+    truncated?: boolean;
+  };
+};
 
 function App() {
   const [textbooks, setTextbooks] = React.useState<Textbook[]>([]);
   const [graphNodes, setGraphNodes] = React.useState<KnowledgeNode[]>([]);
-  const [graphEdges, setGraphEdges] = React.useState<any[]>([]);
+  const [graphEdges, setGraphEdges] = React.useState<KnowledgeEdge[]>([]);
+  const [graphView, setGraphView] = React.useState<GraphView>({ mode: "empty", title: "尚未加载图谱" });
   const [integration, setIntegration] = React.useState<IntegrationResult | null>(null);
   const [selectedNode, setSelectedNode] = React.useState<KnowledgeNode | null>(null);
   const [query, setQuery] = React.useState("");
@@ -25,7 +37,7 @@ function App() {
   const [report, setReport] = React.useState("");
 
   React.useEffect(() => {
-    refresh();
+    refresh({ loadIntegrationGraph: true });
   }, []);
 
   async function run<T>(label: string, action: () => Promise<T>): Promise<T | undefined> {
@@ -41,15 +53,16 @@ function App() {
     }
   }
 
-  async function refresh() {
+  async function refresh(options: { loadIntegrationGraph?: boolean } = {}) {
     const result = await api.textbooks();
     setTextbooks(result.textbooks);
     setRagStatus(await api.ragStatus());
     const current = await api.integration();
     setIntegration(current);
-    if (current.nodes.length) {
+    if (options.loadIntegrationGraph && current.nodes.length) {
       setGraphNodes(current.nodes);
       setGraphEdges(current.edges);
+      setGraphView({ mode: "integration", title: "跨教材整合图谱" });
     }
   }
 
@@ -59,16 +72,23 @@ function App() {
     }
     await run("上传并解析教材", async () => {
       await api.upload(files);
-      await refresh();
+      await refresh({ loadIntegrationGraph: false });
     });
   }
 
   async function buildGraph(textbookId: string) {
     const result = await run("构建单本图谱", () => api.buildGraph(textbookId));
     if (result) {
+      const textbook = textbooks.find((book) => book.id === textbookId);
       setGraphNodes(result.nodes);
       setGraphEdges(result.edges);
-      await refresh();
+      setSelectedNode(null);
+      setGraphView({
+        mode: "single",
+        title: textbook ? `单本图谱：${textbook.title}` : "单本图谱",
+        metrics: result.metrics
+      });
+      await refresh({ loadIntegrationGraph: false });
     }
   }
 
@@ -78,7 +98,19 @@ function App() {
       setIntegration(result);
       setGraphNodes(result.nodes);
       setGraphEdges(result.edges);
+      setSelectedNode(null);
+      setGraphView({ mode: "integration", title: "跨教材整合图谱" });
     }
+  }
+
+  function showIntegrationGraph() {
+    if (!integration?.nodes.length) {
+      return;
+    }
+    setGraphNodes(integration.nodes);
+    setGraphEdges(integration.edges);
+    setSelectedNode(null);
+    setGraphView({ mode: "integration", title: "跨教材整合图谱" });
   }
 
   async function indexRag() {
@@ -150,7 +182,9 @@ function App() {
               <div>
                 <strong>{book.title}</strong>
                 <span>{book.format.toUpperCase()} · {Math.round(book.size_bytes / 1024)} KB · {book.total_chars} 字</span>
+                <span>图谱 {book.graph_node_count || 0} 节点 / {book.graph_edge_count || 0} 边</span>
                 <span className={`status ${book.status}`}>{book.status}</span>
+                {book.error && <span className="row-error">{book.error}</span>}
               </div>
               <button onClick={() => buildGraph(book.id)} disabled={book.status !== "completed" || !!busy} aria-label="构建图谱">
                 <Play size={16} />
@@ -174,7 +208,19 @@ function App() {
             <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索知识点" />
           </div>
           <button onClick={integrate} disabled={!!busy}><GitMerge size={16} />跨教材整合</button>
+          <button onClick={showIntegrationGraph} disabled={!!busy || !integration?.nodes.length}><Network size={16} />显示整合图谱</button>
           <button onClick={indexRag} disabled={!!busy}><FileText size={16} />建立 RAG 索引</button>
+        </div>
+        <div className="graph-status">
+          <div>
+            <strong>{graphView.title}</strong>
+            <span>{graphNodes.length} 节点 · {graphEdges.length} 边 · 当前显示 {visibleNodes.length} 节点</span>
+          </div>
+          {graphView.metrics?.total_chapters !== undefined && (
+            <span className={graphView.metrics.truncated ? "status-warning" : "status-ok"}>
+              已处理 {graphView.metrics.processed_chapters || 0}/{graphView.metrics.total_chapters} 章{graphView.metrics.truncated ? "，已按上限截断" : ""}
+            </span>
+          )}
         </div>
         {error && <div role="alert" className="error-bar">{error}</div>}
         {busy && <div className="busy-bar">{busy}中...</div>}
@@ -273,4 +319,3 @@ function tabLabel(tab: Tab) {
 }
 
 ReactDOM.createRoot(document.getElementById("root")!).render(<App />);
-

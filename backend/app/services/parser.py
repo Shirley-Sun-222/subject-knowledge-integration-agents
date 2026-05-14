@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import shutil
 from pathlib import Path
 
 from ..config import settings
@@ -84,6 +85,7 @@ def _ocr_pdf_page(page) -> str:
         import fitz
     except Exception:
         return ""
+    _configure_tesseract_cmd(pytesseract)
     try:
         # 2x render improves OCR accuracy without making sample uploads impractically slow.
         pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
@@ -106,6 +108,7 @@ def _available_ocr_lang(requested: str) -> str:
     try:
         import pytesseract
 
+        _configure_tesseract_cmd(pytesseract)
         available = set(pytesseract.get_languages(config=""))
     except Exception:
         return "eng"
@@ -114,3 +117,14 @@ def _available_ocr_lang(requested: str) -> str:
     if selected:
         return "+".join(selected)
     return "eng" if "eng" in available else (sorted(available)[0] if available else "eng")
+
+
+def _configure_tesseract_cmd(pytesseract_module) -> None:
+    command = shutil.which("tesseract")
+    if command is None:
+        for candidate in ["/opt/homebrew/bin/tesseract", "/usr/local/bin/tesseract", "/usr/bin/tesseract"]:
+            if Path(candidate).exists():
+                command = candidate
+                break
+    if command:
+        pytesseract_module.pytesseract.tesseract_cmd = command

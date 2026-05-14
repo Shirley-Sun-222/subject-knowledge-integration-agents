@@ -9,6 +9,8 @@ export type Textbook = {
   status: string;
   error?: string | null;
   chapters?: Chapter[];
+  graph_node_count?: number;
+  graph_edge_count?: number;
 };
 
 export type Chapter = {
@@ -69,6 +71,18 @@ export type IntegrationResult = {
   };
 };
 
+export type GraphResult = {
+  nodes: KnowledgeNode[];
+  edges: KnowledgeEdge[];
+  metrics?: {
+    token_estimate?: number;
+    elapsed_ms?: number;
+    processed_chapters?: number;
+    total_chapters?: number;
+    truncated?: boolean;
+  };
+};
+
 export type RagResponse = {
   answer: string;
   citations: Array<{
@@ -102,14 +116,14 @@ export const api = {
   async textbooks(): Promise<{ textbooks: Textbook[] }> {
     return request("/api/textbooks");
   },
-  async buildGraph(textbookId: string): Promise<{ nodes: KnowledgeNode[]; edges: KnowledgeEdge[] }> {
+  async buildGraph(textbookId: string): Promise<GraphResult> {
     return request("/api/graphs/build", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ textbook_id: textbookId })
     });
   },
-  async graph(textbookId: string): Promise<{ nodes: KnowledgeNode[]; edges: KnowledgeEdge[] }> {
+  async graph(textbookId: string): Promise<GraphResult> {
     return request(`/api/graphs/${textbookId}`);
   },
   async runIntegration(): Promise<IntegrationResult> {
@@ -142,4 +156,3 @@ export const api = {
     return request("/api/report/integration");
   }
 };
-
