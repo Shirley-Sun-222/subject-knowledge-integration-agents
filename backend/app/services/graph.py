@@ -61,7 +61,25 @@ def build_graph(textbook_id: str) -> dict:
 
 def get_graph(textbook_id: str) -> dict:
     with connect() as conn:
-        nodes = [row_to_dict(row) for row in conn.execute("SELECT * FROM knowledge_nodes WHERE textbook_id = ?", (textbook_id,))]
+        nodes = [
+            row_to_dict(row)
+            for row in conn.execute(
+                """
+                SELECT n.*,
+                       t.title AS textbook_title,
+                       c.title AS chapter_title,
+                       c.position AS chapter_position,
+                       c.page_start AS page_start,
+                       c.page_end AS page_end
+                FROM knowledge_nodes n
+                JOIN textbooks t ON t.id = n.textbook_id
+                JOIN chapters c ON c.id = n.chapter_id
+                WHERE n.textbook_id = ?
+                ORDER BY c.position, n.page, n.name
+                """,
+                (textbook_id,),
+            )
+        ]
         for node in nodes:
             node["metadata"] = json_loads(node.get("metadata"), {})
         edges = [row_to_dict(row) for row in conn.execute("SELECT * FROM knowledge_edges WHERE textbook_id = ?", (textbook_id,))]
@@ -77,10 +95,16 @@ def get_all_graph_nodes() -> list[dict]:
     with connect() as conn:
         rows = conn.execute(
             """
-            SELECT n.*, t.title AS textbook_title, c.title AS chapter_title
+            SELECT n.*,
+                   t.title AS textbook_title,
+                   c.title AS chapter_title,
+                   c.position AS chapter_position,
+                   c.page_start AS page_start,
+                   c.page_end AS page_end
             FROM knowledge_nodes n
             JOIN textbooks t ON t.id = n.textbook_id
             JOIN chapters c ON c.id = n.chapter_id
+            ORDER BY t.created_at, c.position, n.page, n.name
             """
         )
         nodes = [row_to_dict(row) for row in rows]

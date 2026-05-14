@@ -1,7 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { Download, FileText, GitMerge, MessageSquare, Network, Play, Search, UploadCloud } from "lucide-react";
-import { GraphCanvas } from "./components/GraphCanvas";
+import { GraphCanvas, type GraphLayoutMode } from "./components/GraphCanvas";
 import { api, IntegrationResult, KnowledgeEdge, KnowledgeNode, RagResponse, Textbook } from "./lib/api";
 import "./styles.css";
 
@@ -23,6 +23,7 @@ function App() {
   const [graphNodes, setGraphNodes] = React.useState<KnowledgeNode[]>([]);
   const [graphEdges, setGraphEdges] = React.useState<KnowledgeEdge[]>([]);
   const [graphView, setGraphView] = React.useState<GraphView>({ mode: "empty", title: "尚未加载图谱" });
+  const [graphLayoutMode, setGraphLayoutMode] = React.useState<GraphLayoutMode>("chapter-map");
   const [integration, setIntegration] = React.useState<IntegrationResult | null>(null);
   const [selectedNode, setSelectedNode] = React.useState<KnowledgeNode | null>(null);
   const [query, setQuery] = React.useState("");
@@ -207,6 +208,14 @@ function App() {
             <Search size={17} />
             <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索知识点" />
           </div>
+          <div className="segmented-control" aria-label="图谱视图">
+            <button className={graphLayoutMode === "chapter-map" ? "active" : ""} onClick={() => setGraphLayoutMode("chapter-map")} aria-pressed={graphLayoutMode === "chapter-map"}>
+              章节思维导图
+            </button>
+            <button className={graphLayoutMode === "force" ? "active" : ""} onClick={() => setGraphLayoutMode("force")} aria-pressed={graphLayoutMode === "force"}>
+              关系网络
+            </button>
+          </div>
           <button onClick={integrate} disabled={!!busy}><GitMerge size={16} />跨教材整合</button>
           <button onClick={showIntegrationGraph} disabled={!!busy || !integration?.nodes.length}><Network size={16} />显示整合图谱</button>
           <button onClick={indexRag} disabled={!!busy}><FileText size={16} />建立 RAG 索引</button>
@@ -226,7 +235,15 @@ function App() {
           {error && <div role="alert" className="error-bar">{error}</div>}
           {busy && <div className="busy-bar">{busy}中...</div>}
         </div>
-        <GraphCanvas nodes={visibleNodes} edges={visibleEdges} query={query} selectedNodeId={selectedNode?.id} onSelect={setSelectedNode} />
+        <GraphCanvas
+          nodes={visibleNodes}
+          edges={visibleEdges}
+          query={query}
+          layoutMode={graphLayoutMode}
+          rootLabel={graphView.title}
+          selectedNodeId={selectedNode?.id}
+          onSelect={setSelectedNode}
+        />
       </section>
 
       <aside className="right-panel">

@@ -79,6 +79,15 @@ header p, .muted { color: #64748b; font-size: 13px; margin: 4px 0 0; }
   display: flex; align-items: center; gap: 8px; padding: 0 12px;
 }
 .search-box input { border: 0; outline: none; width: 100%; }
+.segmented-control {
+  display: inline-grid; grid-template-columns: repeat(2, minmax(92px, 1fr));
+  border: 1px solid #cbd5e1; border-radius: 8px; overflow: hidden; background: #fff;
+}
+.segmented-control button {
+  border: 0; border-radius: 0; padding: 9px 10px; justify-content: center; white-space: nowrap;
+}
+.segmented-control button + button { border-left: 1px solid #cbd5e1; }
+.segmented-control .active { background: #1e40af; color: #fff; }
 .graph-status {
   display: flex; justify-content: space-between; gap: 12px; align-items: center;
   background: #ffffff; border: 1px solid #d8e0ef; border-radius: 8px; padding: 10px 12px; margin-bottom: 10px;

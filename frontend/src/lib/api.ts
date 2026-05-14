@@ -34,6 +34,9 @@ export type KnowledgeNode = {
   frequency: number;
   textbook_title?: string;
   chapter_title?: string;
+  chapter_position?: number;
+  page_start?: number;
+  page_end?: number;
   sources?: string[];
   decision_id?: string;
   decision_action?: string;

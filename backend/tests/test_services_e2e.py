@@ -61,8 +61,13 @@ def test_services_end_to_end(tmp_path: Path) -> None:
 
         graph = build_graph(textbook_id)
         assert graph["nodes"]
+        assert graph["nodes"][0]["chapter_title"]
+        assert graph["nodes"][0]["chapter_position"] >= 1
+        assert graph["nodes"][0]["page_start"] >= 1
         integrated = run_integration()
         assert integrated["decisions"]
+        assert integrated["nodes"][0]["chapter_title"]
+        assert integrated["nodes"][0]["chapter_position"] >= 1
         report_data = ReportAgent().collect_data()
         assert report_data["integrated_chars"] == integrated["stats"]["integrated_chars"]
         status = build_index()
@@ -138,6 +143,10 @@ def test_build_graph_limits_processed_chapters_and_reports_truncation(tmp_path: 
         assert graph["metrics"]["total_chapters"] == 3
         assert graph["metrics"]["truncated"] is True
         assert len(graph["nodes"]) == 2
+        assert graph["nodes"][0]["chapter_title"] == "第 1 章"
+        assert graph["nodes"][0]["chapter_position"] == 1
+        assert graph["nodes"][0]["page_start"] == 1
+        assert graph["nodes"][0]["page_end"] == 1
     finally:
         object.__setattr__(settings, "database_url", original_database_url)
         object.__setattr__(settings, "graph_max_chapters", 30)
