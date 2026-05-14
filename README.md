@@ -99,6 +99,8 @@ docker compose up --build
 
 访问 http://localhost:8000。
 
+首次构建需要能访问 Docker Hub、Debian apt 源、PyPI、npm registry 和 Playwright Chromium 下载源。镜像采用多阶段构建：`node:20-bookworm-slim` 只负责生成前端静态资源，`python:3.11-bookworm-slim` 负责运行 FastAPI，并安装 Tesseract OCR、中文字体和 Playwright Chromium。运行时数据通过 `docker-compose.yml` 挂载到本机 `data/` 与 `report/`，不会写入镜像。
+
 ## 魔搭创空间
 
 构建前端后运行：

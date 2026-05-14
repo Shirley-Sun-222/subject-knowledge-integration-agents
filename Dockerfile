@@ -1,21 +1,32 @@
-FROM python:3.11-slim AS backend
+FROM node:20-bookworm-slim AS frontend-builder
 
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential curl nodejs npm \
-    tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-eng \
-    && rm -rf /var/lib/apt/lists/*
+COPY frontend/package.json frontend/package-lock.json frontend/
+RUN npm --prefix frontend ci
 
-COPY requirements.txt package.json ./
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY frontend/package.json frontend/package.json
 COPY frontend/tsconfig.json frontend/tsconfig.json
 COPY frontend/tsconfig.node.json frontend/tsconfig.node.json
 COPY frontend/vite.config.ts frontend/vite.config.ts
 COPY frontend/index.html frontend/index.html
 COPY frontend/src frontend/src
-RUN npm --prefix frontend install && npm --prefix frontend run build
+RUN npm --prefix frontend run build
+
+FROM python:3.11-bookworm-slim AS backend
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential ca-certificates curl fonts-noto-cjk \
+    tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-eng \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt \
+    && python -m playwright install --with-deps chromium
 
 COPY backend backend
 COPY docs docs
@@ -23,6 +34,7 @@ COPY report report
 COPY scripts scripts
 COPY README.md README.md
 COPY .env.example .env.example
+COPY --from=frontend-builder /app/frontend/dist frontend/dist
 
 ENV FRONTEND_DIST=/app/frontend/dist
 EXPOSE 8000
