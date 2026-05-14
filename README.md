@@ -3,6 +3,7 @@
 这是一个面向“多教材知识整合”赛题的 Web 应用实现，覆盖 P0 全链路和关键 P1：
 
 - 多格式教材上传与解析：PDF、Markdown、TXT、DOCX
+- 扫描版 PDF OCR fallback：默认启用 Tesseract OCR，优先中文简体 + 英文
 - 单本教材知识图谱构建与可视化
 - 跨教材知识点语义对齐、去重、压缩和整合决策
 - RAG 精准问答，回答带教材、章节、页码引用
@@ -60,6 +61,34 @@ PDF 导出使用 Playwright Chromium。首次使用可安装浏览器：
 ```bash
 .venv/bin/python -m playwright install chromium
 ```
+
+扫描版 PDF 需要系统安装 Tesseract。Docker 镜像已安装 `tesseract-ocr`、`tesseract-ocr-chi-sim` 和 `tesseract-ocr-eng`。本地 macOS 可用 Homebrew 安装：
+
+```bash
+brew install tesseract tesseract-lang
+```
+
+相关环境变量：
+
+```bash
+OCR_ENABLED=1
+OCR_MAX_PAGES=120
+OCR_LANG=chi_sim+eng
+GRAPH_MAX_CHAPTERS=30
+```
+
+`OCR_MAX_PAGES` 用于限制扫描版大 PDF 的 OCR 页数，避免云端构建长时间卡住。`GRAPH_MAX_CHAPTERS` 用于限制单次图谱构建处理的章节数，接口返回的 `metrics.truncated` 会说明是否截断。
+
+## 数据存储位置
+
+上传后的教材数据保存在运行后端的服务端实例，不保存在浏览器本地：
+
+- 原始上传文件：`data/uploads/`
+- SQLite 数据库：`data/app.db`
+- RAG/向量索引：`data/indexes/`
+- 报告、benchmark 等生成物：`data/generated/`
+
+部署到云端时，这些路径位于云实例文件系统。若需要跨重启长期保留教材和索引，应为 `data/` 配置持久化卷或对象存储同步。
 
 ## Docker 运行
 

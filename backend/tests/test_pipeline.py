@@ -4,7 +4,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
+
 from backend.app.agents.compression import CompressionPlannerAgent
+from backend.app.config import settings
+from backend.app.services import parser
+from backend.app.services.llm import llm_client
 from backend.app.services.parser import parse_textbook
 from backend.app.utils.text import chunk_text, split_chapters, tokenize
 
@@ -48,6 +53,51 @@ class PipelineTest(unittest.TestCase):
         self.assertTrue(decisions)
         self.assertLessEqual(stats["compression_ratio"], 0.3)
         self.assertTrue(any(decision.action == "remove" for decision in decisions))
+
+
+def test_parse_pdf_uses_ocr_when_page_has_no_extractable_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fitz = pytest.importorskip("fitz")
+    path = tmp_path / "scanned.pdf"
+    document = fitz.open()
+    document.new_page()
+    document.save(path)
+    document.close()
+
+    original_ocr_enabled = settings.ocr_enabled
+    original_ocr_max_pages = settings.ocr_max_pages
+    object.__setattr__(settings, "ocr_enabled", True)
+    object.__setattr__(settings, "ocr_max_pages", 1)
+    monkeypatch.setattr(parser, "_ocr_pdf_page", lambda page: "第 1 章 OCR\n排序算法用于处理教材扫描页中的知识点。")
+
+    try:
+        parsed = parse_textbook(path, "扫描教材.pdf")
+    finally:
+        object.__setattr__(settings, "ocr_enabled", original_ocr_enabled)
+        object.__setattr__(settings, "ocr_max_pages", original_ocr_max_pages)
+
+    assert parsed["title"] == "扫描教材"
+    assert parsed["total_pages"] == 1
+    assert parsed["total_chars"] > 20
+    assert parsed["chapters"][0]["title"].startswith("第 1 章")
+
+
+def test_llm_client_returns_error_result_when_provider_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_llm_base_url = settings.llm_base_url
+    original_llm_api_key = settings.llm_api_key
+    object.__setattr__(settings, "llm_base_url", "https://llm.example.test/v1")
+    object.__setattr__(settings, "llm_api_key", "test-key")
+    monkeypatch.setattr(llm_client, "_post", lambda payload: (_ for _ in ()).throw(RuntimeError("provider unavailable")))
+
+    try:
+        result = llm_client.complete_json("system", "user")
+    finally:
+        object.__setattr__(settings, "llm_base_url", original_llm_base_url)
+        object.__setattr__(settings, "llm_api_key", original_llm_api_key)
+
+    assert result["data"] is None
+    assert result["error"] == "provider unavailable"
+    assert result["elapsed_ms"] >= 0
+    assert result["token_estimate"] > 0
 
 
 if __name__ == "__main__":

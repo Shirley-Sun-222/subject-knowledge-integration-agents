@@ -4,7 +4,9 @@ from pathlib import Path
 
 from backend.app.config import settings
 from backend.app.db import connect, init_db
+from backend.app.schemas import KnowledgeEdge, KnowledgeNode
 from backend.app.services.embedding import embedding_service
+from backend.app.services import graph as graph_service
 from backend.app.services.graph import build_graph
 from backend.app.services.integration import run_integration
 from backend.app.services.parser import parse_textbook
@@ -66,3 +68,72 @@ def test_services_end_to_end(tmp_path: Path) -> None:
         assert "当前知识库中未找到相关信息" not in answer.answer
     finally:
         object.__setattr__(settings, "database_url", original_database_url)
+
+
+def test_build_graph_limits_processed_chapters_and_reports_truncation(tmp_path: Path, monkeypatch) -> None:
+    original_database_url = settings.database_url
+    object.__setattr__(settings, "database_url", f"sqlite:///{tmp_path / 'app.db'}")
+    object.__setattr__(settings, "graph_max_chapters", 2)
+
+    class FakeExtractionAgent:
+        def extract(self, chapter: dict, textbook_id: str):
+            node = KnowledgeNode(
+                id=f"node_{chapter['position']}",
+                textbook_id=textbook_id,
+                chapter_id=chapter["id"],
+                name=f"概念{chapter['position']}",
+                definition="章节核心概念",
+                category="核心概念",
+                page=chapter["page_start"],
+                source_excerpt=chapter["content"],
+            )
+            edge = KnowledgeEdge(
+                id=f"edge_{chapter['position']}",
+                textbook_id=textbook_id,
+                source=node.id,
+                target=node.id,
+                relation_type="parallel",
+                description="自测关系",
+            )
+            return [node], [edge], {"elapsed_ms": 3, "token_estimate": 5}
+
+    monkeypatch.setattr(graph_service, "KnowledgeExtractionAgent", FakeExtractionAgent)
+    try:
+        init_db()
+        textbook_id = new_id("book")
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO textbooks
+                (id, filename, title, format, size_bytes, total_pages, total_chars, status, error, created_at)
+                VALUES (?, 'sample.md', 'sample', 'md', 10, 1, 300, 'completed', NULL, '2026-05-14T00:00:00Z')
+                """,
+                (textbook_id,),
+            )
+            for position in range(1, 4):
+                conn.execute(
+                    """
+                    INSERT INTO chapters (id, textbook_id, title, page_start, page_end, content, char_count, position)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        f"chapter_{position}",
+                        textbook_id,
+                        f"第 {position} 章",
+                        position,
+                        position,
+                        f"第 {position} 章内容",
+                        100,
+                        position,
+                    ),
+                )
+
+        graph = build_graph(textbook_id)
+
+        assert graph["metrics"]["processed_chapters"] == 2
+        assert graph["metrics"]["total_chapters"] == 3
+        assert graph["metrics"]["truncated"] is True
+        assert len(graph["nodes"]) == 2
+    finally:
+        object.__setattr__(settings, "database_url", original_database_url)
+        object.__setattr__(settings, "graph_max_chapters", 30)

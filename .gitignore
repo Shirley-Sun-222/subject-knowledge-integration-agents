@@ -14,7 +14,7 @@ frontend/.vite/
 frontend/vite.config.js
 frontend/vite.config.d.ts
 .codex/
-handoff-*.md
+handoff-*
 
 # Environment
 .env

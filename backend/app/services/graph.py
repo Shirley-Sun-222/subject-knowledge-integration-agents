@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ..agents.extraction import KnowledgeExtractionAgent
+from ..config import settings
 from ..db import connect, json_dumps, json_loads, row_to_dict
 
 
@@ -10,6 +11,9 @@ def build_graph(textbook_id: str) -> dict:
     total_elapsed = 0
     with connect() as conn:
         chapters = [row_to_dict(row) for row in conn.execute("SELECT * FROM chapters WHERE textbook_id = ? ORDER BY position", (textbook_id,))]
+        original_chapter_count = len(chapters)
+        if settings.graph_max_chapters > 0:
+            chapters = chapters[: settings.graph_max_chapters]
         conn.execute("DELETE FROM knowledge_edges WHERE textbook_id = ?", (textbook_id,))
         conn.execute("DELETE FROM knowledge_nodes WHERE textbook_id = ?", (textbook_id,))
         for chapter in chapters:
@@ -45,7 +49,13 @@ def build_graph(textbook_id: str) -> dict:
                     (edge.id, edge.textbook_id, edge.source, edge.target, edge.relation_type, edge.description),
                 )
     graph = get_graph(textbook_id)
-    graph["metrics"] = {"token_estimate": total_tokens, "elapsed_ms": total_elapsed}
+    graph["metrics"] = {
+        "token_estimate": total_tokens,
+        "elapsed_ms": total_elapsed,
+        "processed_chapters": len(chapters),
+        "total_chapters": original_chapter_count,
+        "truncated": len(chapters) < original_chapter_count,
+    }
     return graph
 
 
@@ -77,4 +87,3 @@ def get_all_graph_nodes() -> list[dict]:
         for node in nodes:
             node["metadata"] = json_loads(node.get("metadata"), {})
         return nodes
-

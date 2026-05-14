@@ -37,15 +37,25 @@ class LlmClient:
             "temperature": 0.1,
             "response_format": {"type": "json_object"},
         }
-        data = self._post(payload)
-        content = data["choices"][0]["message"]["content"]
-        return LlmResult(
-            {
-                "data": json.loads(content),
-                "elapsed_ms": int((time.perf_counter() - started) * 1000),
-                "token_estimate": estimate_tokens([system, user, content]),
-            }
-        )
+        try:
+            data = self._post(payload)
+            content = data["choices"][0]["message"]["content"]
+            return LlmResult(
+                {
+                    "data": json.loads(content),
+                    "elapsed_ms": int((time.perf_counter() - started) * 1000),
+                    "token_estimate": estimate_tokens([system, user, content]),
+                }
+            )
+        except Exception as exc:
+            return LlmResult(
+                {
+                    "data": None,
+                    "elapsed_ms": int((time.perf_counter() - started) * 1000),
+                    "token_estimate": estimate_tokens([system, user]),
+                    "error": str(exc),
+                }
+            )
 
     def complete_text(self, system: str, user: str) -> LlmResult:
         if not self.is_configured():
@@ -59,15 +69,25 @@ class LlmClient:
             ],
             "temperature": 0.2,
         }
-        data = self._post(payload)
-        content = data["choices"][0]["message"]["content"]
-        return LlmResult(
-            {
-                "data": content,
-                "elapsed_ms": int((time.perf_counter() - started) * 1000),
-                "token_estimate": estimate_tokens([system, user, content]),
-            }
-        )
+        try:
+            data = self._post(payload)
+            content = data["choices"][0]["message"]["content"]
+            return LlmResult(
+                {
+                    "data": content,
+                    "elapsed_ms": int((time.perf_counter() - started) * 1000),
+                    "token_estimate": estimate_tokens([system, user, content]),
+                }
+            )
+        except Exception as exc:
+            return LlmResult(
+                {
+                    "data": None,
+                    "elapsed_ms": int((time.perf_counter() - started) * 1000),
+                    "token_estimate": estimate_tokens([system, user]),
+                    "error": str(exc),
+                }
+            )
 
     def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
         base = settings.llm_base_url.rstrip("/")
@@ -89,4 +109,3 @@ class LlmClient:
 
 
 llm_client = LlmClient()
-

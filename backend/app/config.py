@@ -34,6 +34,10 @@ class Settings:
     llm_model: str = os.getenv("LLM_MODEL", "gpt-4o-mini")
     embedding_model: str = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")
     embedding_allow_download: bool = os.getenv("EMBEDDING_ALLOW_DOWNLOAD", "0") == "1"
+    ocr_enabled: bool = os.getenv("OCR_ENABLED", "1") == "1"
+    ocr_max_pages: int = int(os.getenv("OCR_MAX_PAGES", "120"))
+    ocr_lang: str = os.getenv("OCR_LANG", "chi_sim+eng")
+    graph_max_chapters: int = int(os.getenv("GRAPH_MAX_CHAPTERS", "30"))
 
     @property
     def database_path(self) -> Path:

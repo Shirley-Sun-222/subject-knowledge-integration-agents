@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
+from ..config import settings
 from ..utils.text import normalize_space, split_chapters, strip_repeated_headers
 
 
@@ -56,8 +58,59 @@ def _parse_pdf(path: Path) -> dict:
 
     document = fitz.open(path)
     pages: list[str] = []
-    for page in document:
+    for page_index, page in enumerate(document):
         lines = page.get_text("text").splitlines()
-        filtered = strip_repeated_headers(lines)
-        pages.append("\n".join(filtered))
-    return {"text": normalize_space("\n\n".join(pages)), "total_pages": max(1, len(document))}
+        page_text = "\n".join(strip_repeated_headers(lines))
+        if settings.ocr_enabled and len(normalize_space(page_text)) < 20 and page_index < settings.ocr_max_pages:
+            ocr_text = _ocr_pdf_page(page)
+            if len(normalize_space(ocr_text)) > len(normalize_space(page_text)):
+                page_text = ocr_text
+        pages.append(page_text)
+    text = normalize_space("\n\n".join(pages))
+    if len(text) < 20:
+        hint = "PDF has no extractable text"
+        if settings.ocr_enabled:
+            hint += "; OCR did not produce usable text. Check tesseract language data and OCR_MAX_PAGES."
+        else:
+            hint += "; enable OCR_ENABLED=1 for scanned PDFs."
+        raise ParseError(hint)
+    return {"text": text, "total_pages": max(1, len(document))}
+
+
+def _ocr_pdf_page(page) -> str:
+    try:
+        import pytesseract
+        from PIL import Image
+        import fitz
+    except Exception:
+        return ""
+    try:
+        # 2x render improves OCR accuracy without making sample uploads impractically slow.
+        pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+        image = Image.open(io.BytesIO(pixmap.tobytes("png")))
+    except Exception:
+        return ""
+    lang = _available_ocr_lang(settings.ocr_lang)
+    try:
+        return pytesseract.image_to_string(image, lang=lang).strip()
+    except Exception:
+        if lang != "eng":
+            try:
+                return pytesseract.image_to_string(image, lang="eng").strip()
+            except Exception:
+                return ""
+        return ""
+
+
+def _available_ocr_lang(requested: str) -> str:
+    try:
+        import pytesseract
+
+        available = set(pytesseract.get_languages(config=""))
+    except Exception:
+        return "eng"
+    parts = [part for part in requested.split("+") if part]
+    selected = [part for part in parts if part in available]
+    if selected:
+        return "+".join(selected)
+    return "eng" if "eng" in available else (sorted(available)[0] if available else "eng")
