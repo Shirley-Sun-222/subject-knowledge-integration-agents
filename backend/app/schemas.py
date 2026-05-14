@@ -1,0 +1,105 @@
+from __future__ import annotations
+
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+
+class Textbook(BaseModel):
+    id: str
+    filename: str
+    title: str
+    format: str
+    size_bytes: int
+    total_pages: int = 0
+    total_chars: int = 0
+    status: str
+    error: str | None = None
+    created_at: str
+
+
+class Chapter(BaseModel):
+    id: str
+    textbook_id: str
+    title: str
+    page_start: int
+    page_end: int
+    content: str
+    char_count: int
+    position: int
+
+
+class Chunk(BaseModel):
+    id: str
+    textbook_id: str
+    chapter_id: str
+    chunk_index: int
+    text: str
+    page_start: int
+    char_count: int
+    embedding: str | None = None
+
+
+class KnowledgeNode(BaseModel):
+    id: str
+    textbook_id: str
+    chapter_id: str
+    name: str
+    definition: str
+    category: str
+    page: int
+    source_excerpt: str
+    frequency: int = 1
+    metadata: dict = Field(default_factory=dict)
+
+
+class KnowledgeEdge(BaseModel):
+    id: str
+    textbook_id: str
+    source: str
+    target: str
+    relation_type: Literal["prerequisite", "parallel", "contains", "applies_to"]
+    description: str
+
+
+class IntegrationDecision(BaseModel):
+    id: str
+    action: Literal["merge", "keep", "remove"]
+    affected_nodes: list[str]
+    result_node: str | None
+    reason: str
+    confidence: float
+    created_at: str
+
+
+class Citation(BaseModel):
+    textbook: str
+    chapter: str
+    page: int
+    relevance_score: float
+    chunk_id: str
+    text: str
+
+
+class RagQueryRequest(BaseModel):
+    question: str
+    top_k: int = 5
+
+
+class RagQueryResponse(BaseModel):
+    answer: str
+    citations: list[Citation]
+    source_chunks: list[str]
+    elapsed_ms: int
+    token_estimate: int
+
+
+class DialogueRequest(BaseModel):
+    message: str
+
+
+class DialogueResponse(BaseModel):
+    reply: str
+    updated_decision: IntegrationDecision | None = None
+    graph_updated: bool = False
+
