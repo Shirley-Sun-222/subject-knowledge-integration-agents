@@ -11,7 +11,7 @@ COPY frontend/index.html frontend/index.html
 COPY frontend/src frontend/src
 RUN npm --prefix frontend run build
 
-FROM python:3.11-bookworm-slim AS backend
+FROM python:3.11-slim-bookworm AS backend
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -20,12 +20,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential ca-certificates curl fonts-noto-cjk \
+    build-essential ca-certificates curl \
     tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt \
+COPY requirements-docker.txt ./
+RUN pip install --no-cache-dir -r requirements-docker.txt \
     && python -m playwright install --with-deps chromium
 
 COPY backend backend
