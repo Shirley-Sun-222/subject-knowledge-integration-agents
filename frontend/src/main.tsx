@@ -222,8 +222,10 @@ function App() {
             </span>
           )}
         </div>
-        {error && <div role="alert" className="error-bar">{error}</div>}
-        {busy && <div className="busy-bar">{busy}中...</div>}
+        <div className="workspace-messages">
+          {error && <div role="alert" className="error-bar">{error}</div>}
+          {busy && <div className="busy-bar">{busy}中...</div>}
+        </div>
         <GraphCanvas nodes={visibleNodes} edges={visibleEdges} query={query} selectedNodeId={selectedNode?.id} onSelect={setSelectedNode} />
       </section>
 
