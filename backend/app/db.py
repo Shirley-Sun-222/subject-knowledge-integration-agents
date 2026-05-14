@@ -33,6 +33,7 @@ def connect() -> Iterator[sqlite3.Connection]:
     path: Path = settings.database_path
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
     try:
         yield conn
         conn.commit()
@@ -135,4 +136,3 @@ def init_db() -> None:
             );
             """
         )
-

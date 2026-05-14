@@ -20,7 +20,7 @@ def parse_textbook(path: Path, filename: str) -> dict:
     else:
         raise ParseError(f"Unsupported file format: {suffix}")
 
-    title = path.stem
+    title = Path(filename).stem
     chapters = split_chapters(parsed["text"], title=title, total_pages=parsed["total_pages"])
     return {
         "filename": filename,
@@ -61,4 +61,3 @@ def _parse_pdf(path: Path) -> dict:
         filtered = strip_repeated_headers(lines)
         pages.append("\n".join(filtered))
     return {"text": normalize_space("\n\n".join(pages)), "total_pages": max(1, len(document))}
-

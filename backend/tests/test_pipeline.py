@@ -31,10 +31,11 @@ class PipelineTest(unittest.TestCase):
 
     def test_parse_markdown_textbook(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "demo.md"
+            path = Path(directory) / "book_123.md"
             path.write_text("# 第 1 章 绪论\n知识图谱用于表示概念关系。", encoding="utf-8")
-            parsed = parse_textbook(path, "demo.md")
+            parsed = parse_textbook(path, "原始教材名称.md")
         self.assertEqual(parsed["format"], "md")
+        self.assertEqual(parsed["title"], "原始教材名称")
         self.assertGreater(parsed["total_chars"], 0)
         self.assertTrue(parsed["chapters"])
 
