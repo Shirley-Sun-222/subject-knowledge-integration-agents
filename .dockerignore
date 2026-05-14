@@ -1,0 +1,38 @@
+.git
+.gitignore
+.dockerignore
+
+# Local Python and Node dependencies are rebuilt in the image.
+.venv
+venv
+__pycache__
+*.pyc
+node_modules
+frontend/node_modules
+frontend/dist
+frontend/.vite
+
+# Local runtime data is mounted by docker-compose, not baked into the image.
+data
+book_samples
+*.pdf
+*.sqlite
+*.sqlite3
+
+# Local-only configuration and generated handoff/debug artifacts.
+.env
+.env.*
+!.env.example
+.codex
+handoff-*
+.pytest_cache
+.ruff_cache
+.playwright-mcp
+console-ui-check.log
+snapshot-ui-check.md
+subject-knowledge-agent-ui.png
+
+# Editor and OS metadata.
+.DS_Store
+.idea
+.vscode
