@@ -10,6 +10,7 @@ def build_graph(textbook_id: str) -> dict:
     total_tokens = 0
     total_elapsed = 0
     fallback_chapters = 0
+    llm_errors: list[str] = []
     with connect() as conn:
         chapters = [row_to_dict(row) for row in conn.execute("SELECT * FROM chapters WHERE textbook_id = ? ORDER BY position", (textbook_id,))]
         original_chapter_count = len(chapters)
@@ -23,6 +24,9 @@ def build_graph(textbook_id: str) -> dict:
             total_elapsed += int(metrics.get("elapsed_ms", 0))
             if metrics.get("fallback"):
                 fallback_chapters += 1
+            error = metrics.get("error") or metrics.get("schema_error")
+            if error:
+                llm_errors.append(str(error)[:200])
             for node in nodes:
                 conn.execute(
                     """
@@ -61,6 +65,7 @@ def build_graph(textbook_id: str) -> dict:
         "fallback_chapters": fallback_chapters,
         "llm_chapters": len(chapters) - fallback_chapters,
         "llm_configured": bool(settings.llm_base_url and settings.llm_api_key),
+        "llm_errors": llm_errors[:5],
     }
     return graph
 

@@ -53,6 +53,29 @@ EMBEDDING_MODEL=BAAI/bge-small-zh-v1.5
 EMBEDDING_ALLOW_DOWNLOAD=0
 ```
 
+DeepSeek 可按 OpenAI-compatible 方式接入：
+
+```bash
+LLM_BASE_URL=https://api.deepseek.com
+LLM_API_KEY=<只写入本地 .env 或部署平台环境变量>
+LLM_MODEL=deepseek-v4-pro
+LLM_TIMEOUT_SECONDS=90
+```
+
+不要把真实 API Key 写入 README、代码、commit、GitHub Issue 或部署日志。若 key 曾出现在聊天记录、截图或日志中，正式部署前应在供应商控制台轮换新 key。
+
+本地可以用交互式脚本安全写入 `.env`，输入的 key 不会回显：
+
+```bash
+.venv/bin/python scripts/configure_local_llm.py
+```
+
+写入后运行连通性检查，脚本只输出模型、是否配置、耗时和成功状态，不打印 key：
+
+```bash
+.venv/bin/python scripts/check_llm.py
+```
+
 没有配置 LLM 时，系统会使用离线 fallback 生成可演示图谱、整合决策和 RAG 回答。
 `EMBEDDING_ALLOW_DOWNLOAD=0` 时只使用本地已缓存的 embedding 模型，未缓存会立即降级到 hash embedding，避免部署时卡在 HuggingFace 下载。需要自动下载模型时改为 `1`。
 
@@ -111,11 +134,37 @@ npm --prefix frontend run build
 bash scripts/start_modelscope.sh
 ```
 
+推荐从 GitHub 导入公开仓库部署，魔搭配置保持“空数据库启动”，教材由评审或使用者在网页上传，不把 PDF、SQLite、索引或报告生成物提交到仓库。
+
 魔搭入口命令可设置为：
 
 ```bash
 bash scripts/start_modelscope.sh
 ```
+
+魔搭环境变量建议：
+
+```bash
+LLM_BASE_URL=https://api.deepseek.com
+LLM_API_KEY=<部署平台 Secret，不提交到 GitHub>
+LLM_MODEL=deepseek-v4-pro
+LLM_TIMEOUT_SECONDS=90
+EMBEDDING_ALLOW_DOWNLOAD=0
+OCR_ENABLED=1
+OCR_MAX_PAGES=120
+GRAPH_MAX_CHAPTERS=30
+FRONTEND_DIST=/当前工作目录/frontend/dist
+```
+
+构建命令建议：
+
+```bash
+npm --prefix frontend install
+npm --prefix frontend run build
+pip install -r requirements.txt
+```
+
+如果魔搭运行环境不允许安装 OCR 或 Chromium 依赖，第一轮验收可先保证文本型 PDF/MD/TXT、图谱、RAG 和 Markdown 报告链路可用；PDF 导出和扫描版 OCR 再根据平台日志补依赖。
 
 ## 测试与 Benchmark
 
@@ -162,6 +211,7 @@ scripts/          部署和 benchmark 脚本
 ```bash
 git status --short
 git ls-files '*.pdf'
+git grep -n -E 'sk-[A-Za-z0-9]'
 ```
 
 若 `git ls-files '*.pdf'` 只列出允许提交的文档 PDF，或没有输出，即可创建远端仓库并推送：

@@ -35,6 +35,7 @@ class LlmClient:
                 {"role": "user", "content": user},
             ],
             "temperature": 0.1,
+            "max_tokens": 1400,
             "response_format": {"type": "json_object"},
         }
         try:
@@ -68,6 +69,7 @@ class LlmClient:
                 {"role": "user", "content": user},
             ],
             "temperature": 0.2,
+            "max_tokens": 900,
         }
         try:
             data = self._post(payload)
@@ -102,7 +104,7 @@ class LlmClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=45) as response:
+            with urllib.request.urlopen(request, timeout=settings.llm_timeout_seconds) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.URLError as exc:
             raise RuntimeError(f"LLM request failed: {exc}") from exc

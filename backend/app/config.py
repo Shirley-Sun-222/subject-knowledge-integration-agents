@@ -32,6 +32,7 @@ class Settings:
     llm_base_url: str = os.getenv("LLM_BASE_URL", "")
     llm_api_key: str = os.getenv("LLM_API_KEY", "")
     llm_model: str = os.getenv("LLM_MODEL", "gpt-4o-mini")
+    llm_timeout_seconds: int = int(os.getenv("LLM_TIMEOUT_SECONDS", "90"))
     embedding_model: str = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")
     embedding_allow_download: bool = os.getenv("EMBEDDING_ALLOW_DOWNLOAD", "0") == "1"
     ocr_enabled: bool = os.getenv("OCR_ENABLED", "1") == "1"

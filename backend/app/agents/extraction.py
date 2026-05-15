@@ -12,9 +12,11 @@ RELATION_TYPES = ["prerequisite", "parallel", "contains", "applies_to"]
 class KnowledgeExtractionAgent:
     system_prompt = (
         "你是学科教材知识图谱抽取 Agent。只输出 JSON。"
+        "输出格式必须是 {\"nodes\": [...], \"edges\": [...]}。"
         "节点字段为 name, definition, category, page, source_excerpt。"
         "边字段为 source_name, target_name, relation_type, description。"
         "relation_type 只能是 prerequisite, parallel, contains, applies_to。"
+        "知识点必须是教材中的教学概念，不要抽取孤立词语、页眉页脚、出版社信息或目录编号。"
     )
 
     def extract(self, chapter: dict, textbook_id: str) -> tuple[list[KnowledgeNode], list[KnowledgeEdge], dict]:
@@ -24,16 +26,21 @@ class KnowledgeExtractionAgent:
                 f"教材章节: {chapter['title']}\n"
                 f"起始页: {chapter['page_start']}\n"
                 "请抽取 3-8 个核心知识点，以及它们之间最重要的关系。\n"
-                f"正文:\n{chapter['content'][:6000]}"
+                f"正文:\n{chapter['content'][:2400]}"
             ),
         )
         if result.get("data"):
             try:
                 return self._from_llm(result["data"], chapter, textbook_id, result)
-            except Exception:
-                pass
+            except Exception as exc:
+                result["schema_error"] = str(exc)
         nodes, edges = self._heuristic(chapter, textbook_id)
-        return nodes, edges, {"elapsed_ms": result.elapsed_ms, "token_estimate": result.token_estimate, "fallback": True}
+        metrics = {"elapsed_ms": result.elapsed_ms, "token_estimate": result.token_estimate, "fallback": True}
+        if result.get("error"):
+            metrics["error"] = result["error"]
+        if result.get("schema_error"):
+            metrics["schema_error"] = result["schema_error"]
+        return nodes, edges, metrics
 
     def _from_llm(self, data: dict, chapter: dict, textbook_id: str, metrics: dict) -> tuple[list[KnowledgeNode], list[KnowledgeEdge], dict]:
         raw_nodes = data.get("nodes", [])
@@ -113,4 +120,3 @@ class KnowledgeExtractionAgent:
                 )
             )
         return nodes, edges
-

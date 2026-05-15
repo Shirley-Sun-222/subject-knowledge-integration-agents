@@ -7,9 +7,10 @@ from pathlib import Path
 import pytest
 
 from backend.app.agents.compression import CompressionPlannerAgent
+from backend.app.agents.extraction import KnowledgeExtractionAgent
 from backend.app.config import settings
 from backend.app.services import parser
-from backend.app.services.llm import llm_client
+from backend.app.services.llm import LlmResult, llm_client
 from backend.app.services.parser import parse_textbook
 from backend.app.utils.text import chunk_text, split_chapters, tokenize
 
@@ -98,6 +99,28 @@ def test_llm_client_returns_error_result_when_provider_fails(monkeypatch: pytest
     assert result["error"] == "provider unavailable"
     assert result["elapsed_ms"] >= 0
     assert result["token_estimate"] > 0
+
+
+def test_extraction_fallback_metrics_include_llm_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    chapter = {
+        "id": "chapter_test",
+        "title": "第 1 章 排序",
+        "page_start": 1,
+        "content": "排序算法包括快速排序和归并排序。",
+    }
+
+    def fake_complete_json(system: str, user: str) -> dict:
+        return LlmResult({"data": {"nodes": [{}], "edges": []}, "elapsed_ms": 12, "token_estimate": 34})
+
+    monkeypatch.setattr(llm_client, "complete_json", fake_complete_json)
+
+    nodes, edges, metrics = KnowledgeExtractionAgent().extract(chapter, "book_test")
+
+    assert nodes
+    assert edges
+    assert metrics["fallback"] is True
+    assert metrics["elapsed_ms"] == 12
+    assert "schema_error" in metrics
 
 
 if __name__ == "__main__":
