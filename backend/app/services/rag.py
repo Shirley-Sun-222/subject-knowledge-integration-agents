@@ -11,6 +11,31 @@ from ..services.llm import llm_client
 from ..utils.ids import new_id
 from ..utils.text import chunk_text, estimate_tokens, tokenize
 
+GENERIC_QUERY_TERMS = {
+    "什么",
+    "为何",
+    "为什么",
+    "如何",
+    "怎么",
+    "多少",
+    "今天",
+    "通常",
+    "哪些",
+    "用于",
+    "解决",
+    "介绍",
+    "工作",
+    "系统",
+    "推荐",
+    "三家",
+    "餐厅",
+    "意思",
+    "区别",
+    "联系",
+    "共同",
+    "主题",
+}
+
 
 def build_index() -> dict:
     with connect() as conn:
@@ -78,7 +103,7 @@ def query(question: str, top_k: int = 5) -> RagQueryResponse:
             ranked.append((score, chunk))
     ranked.sort(key=lambda item: item[0], reverse=True)
     top = [(score, chunk) for score, chunk in ranked[:top_k] if score > 0]
-    if not top:
+    if not top or not _has_specific_query_overlap(question, top):
         return RagQueryResponse(answer="当前知识库中未找到相关信息", citations=[], source_chunks=[], elapsed_ms=int((time.perf_counter() - started) * 1000), token_estimate=estimate_tokens([question]))
 
     answer_result = _answer_with_context(question, top)
@@ -149,6 +174,25 @@ def _bm25_scores(question: str, chunks: list[dict]) -> dict[str, float]:
     if max_score > 0:
         scores = {key: value / max_score for key, value in scores.items()}
     return scores
+
+
+def _specific_query_terms(question: str) -> set[str]:
+    return {
+        term
+        for term in tokenize(question)
+        if len(term) >= 2 and term not in GENERIC_QUERY_TERMS
+    }
+
+
+def _has_specific_query_overlap(question: str, top: list[tuple[float, dict]]) -> bool:
+    terms = _specific_query_terms(question)
+    if not terms:
+        return False
+    for _, chunk in top:
+        chunk_terms = set(tokenize(chunk["text"]))
+        if len(terms & chunk_terms) >= 2:
+            return True
+    return False
 
 
 def _answer_with_context(question: str, top: list[tuple[float, dict]]) -> dict:

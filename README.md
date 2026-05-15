@@ -124,6 +124,8 @@ python3 -m pytest backend/tests
 python3 scripts/run_rag_benchmark.py
 ```
 
+`scripts/run_rag_benchmark.py` 内置 25 个问题，覆盖事实性、比较性、推理性、跨教材和领域外拒答场景。输出会写入 `data/generated/rag-benchmark.json`，包含引用命中、来源提示命中、答案关键词命中、拒答命中、响应耗时和 token 估算。当前 benchmark 是自动化质量代理指标，最终提交前仍建议人工抽查回答准确率和引用准确率。
+
 ## 样例教材测试
 
 本地测试教材可放入 `book_samples/`。该目录下的 PDF 会被 `.gitignore` 排除，不会提交到仓库。可用脚本导入样例教材，并可选构建单本图谱、整合、RAG 索引和报告：
@@ -152,6 +154,25 @@ report/           整合报告 Markdown
 data/             上传文件、索引和生成文件，不提交教材 PDF
 scripts/          部署和 benchmark 脚本
 ```
+
+## GitHub 发布
+
+发布前先确认不会提交教材和运行产物：
+
+```bash
+git status --short
+git ls-files '*.pdf'
+```
+
+若 `git ls-files '*.pdf'` 只列出允许提交的文档 PDF，或没有输出，即可创建远端仓库并推送：
+
+```bash
+git remote add origin https://github.com/<your-name>/<repo>.git
+git branch -M main
+git push -u origin main
+```
+
+不要把 `book_samples/`、`data/`、`.env`、上传教材、SQLite 数据库或向量索引推送到 GitHub。比赛提交时使用公开 GitHub 仓库链接和公网部署链接；本地 `localhost` 不能作为部署链接。
 
 ## 注意
 
