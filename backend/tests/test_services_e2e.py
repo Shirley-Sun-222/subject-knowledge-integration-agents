@@ -146,15 +146,15 @@ def test_build_graph_limits_processed_chapters_and_reports_truncation(tmp_path: 
                     ),
                 )
 
-        graph = build_graph(textbook_id)
+        graph = build_graph(textbook_id, max_chapters=1)
 
-        assert graph["metrics"]["processed_chapters"] == 2
+        assert graph["metrics"]["processed_chapters"] == 1
         assert graph["metrics"]["total_chapters"] == 3
         assert graph["metrics"]["truncated"] is True
         assert graph["metrics"]["fallback_chapters"] == 0
-        assert graph["metrics"]["llm_chapters"] == 2
+        assert graph["metrics"]["llm_chapters"] == 1
         assert graph["metrics"]["llm_configured"] is False
-        assert len(graph["nodes"]) == 2
+        assert len(graph["nodes"]) == 1
         assert graph["nodes"][0]["chapter_title"] == "第 1 章"
         assert graph["nodes"][0]["chapter_position"] == 1
         assert graph["nodes"][0]["page_start"] == 1

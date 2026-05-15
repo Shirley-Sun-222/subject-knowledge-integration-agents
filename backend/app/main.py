@@ -53,7 +53,15 @@ def build_graph(payload: dict) -> dict:
     textbook_id = payload.get("textbook_id")
     if not textbook_id:
         raise HTTPException(status_code=400, detail="textbook_id is required")
-    return graph.build_graph(textbook_id)
+    max_chapters = payload.get("max_chapters")
+    if max_chapters is not None:
+        try:
+            max_chapters = int(max_chapters)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="max_chapters must be an integer") from exc
+        if max_chapters <= 0:
+            raise HTTPException(status_code=400, detail="max_chapters must be greater than 0")
+    return graph.build_graph(textbook_id, max_chapters=max_chapters)
 
 
 @app.get("/api/graphs/{textbook_id}")
@@ -110,4 +118,3 @@ async def integration_report_pdf() -> FileResponse:
 
 if settings.frontend_dist and settings.frontend_dist.exists():
     app.mount("/", StaticFiles(directory=str(settings.frontend_dist), html=True), name="frontend")
-

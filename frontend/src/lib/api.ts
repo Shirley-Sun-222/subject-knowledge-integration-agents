@@ -123,11 +123,11 @@ export const api = {
   async textbooks(): Promise<{ textbooks: Textbook[] }> {
     return request("/api/textbooks");
   },
-  async buildGraph(textbookId: string): Promise<GraphResult> {
+  async buildGraph(textbookId: string, maxChapters = 8): Promise<GraphResult> {
     return request("/api/graphs/build", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ textbook_id: textbookId })
+      body: JSON.stringify({ textbook_id: textbookId, max_chapters: maxChapters })
     });
   },
   async graph(textbookId: string): Promise<GraphResult> {

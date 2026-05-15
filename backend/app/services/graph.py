@@ -5,7 +5,7 @@ from ..config import settings
 from ..db import connect, json_dumps, json_loads, row_to_dict
 
 
-def build_graph(textbook_id: str) -> dict:
+def build_graph(textbook_id: str, max_chapters: int | None = None) -> dict:
     agent = KnowledgeExtractionAgent()
     total_tokens = 0
     total_elapsed = 0
@@ -13,20 +13,27 @@ def build_graph(textbook_id: str) -> dict:
     llm_errors: list[str] = []
     with connect() as conn:
         chapters = [row_to_dict(row) for row in conn.execute("SELECT * FROM chapters WHERE textbook_id = ? ORDER BY position", (textbook_id,))]
-        original_chapter_count = len(chapters)
-        if settings.graph_max_chapters > 0:
-            chapters = chapters[: settings.graph_max_chapters]
+    original_chapter_count = len(chapters)
+    chapter_limit = _resolve_chapter_limit(max_chapters)
+    if chapter_limit > 0:
+        chapters = chapters[:chapter_limit]
+
+    extracted: list[tuple[list, list]] = []
+    for chapter in chapters:
+        nodes, edges, metrics = agent.extract(chapter, textbook_id)
+        total_tokens += int(metrics.get("token_estimate", 0))
+        total_elapsed += int(metrics.get("elapsed_ms", 0))
+        if metrics.get("fallback"):
+            fallback_chapters += 1
+        error = metrics.get("error") or metrics.get("schema_error")
+        if error:
+            llm_errors.append(str(error)[:200])
+        extracted.append((nodes, edges))
+
+    with connect() as conn:
         conn.execute("DELETE FROM knowledge_edges WHERE textbook_id = ?", (textbook_id,))
         conn.execute("DELETE FROM knowledge_nodes WHERE textbook_id = ?", (textbook_id,))
-        for chapter in chapters:
-            nodes, edges, metrics = agent.extract(chapter, textbook_id)
-            total_tokens += int(metrics.get("token_estimate", 0))
-            total_elapsed += int(metrics.get("elapsed_ms", 0))
-            if metrics.get("fallback"):
-                fallback_chapters += 1
-            error = metrics.get("error") or metrics.get("schema_error")
-            if error:
-                llm_errors.append(str(error)[:200])
+        for nodes, edges in extracted:
             for node in nodes:
                 conn.execute(
                     """
@@ -68,6 +75,15 @@ def build_graph(textbook_id: str) -> dict:
         "llm_errors": llm_errors[:5],
     }
     return graph
+
+
+def _resolve_chapter_limit(max_chapters: int | None = None) -> int:
+    configured = settings.graph_max_chapters
+    if max_chapters is None:
+        return configured
+    if configured <= 0:
+        return max_chapters
+    return min(configured, max_chapters)
 
 
 def get_graph(textbook_id: str) -> dict:
