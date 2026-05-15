@@ -9,6 +9,7 @@ def build_graph(textbook_id: str) -> dict:
     agent = KnowledgeExtractionAgent()
     total_tokens = 0
     total_elapsed = 0
+    fallback_chapters = 0
     with connect() as conn:
         chapters = [row_to_dict(row) for row in conn.execute("SELECT * FROM chapters WHERE textbook_id = ? ORDER BY position", (textbook_id,))]
         original_chapter_count = len(chapters)
@@ -20,6 +21,8 @@ def build_graph(textbook_id: str) -> dict:
             nodes, edges, metrics = agent.extract(chapter, textbook_id)
             total_tokens += int(metrics.get("token_estimate", 0))
             total_elapsed += int(metrics.get("elapsed_ms", 0))
+            if metrics.get("fallback"):
+                fallback_chapters += 1
             for node in nodes:
                 conn.execute(
                     """
@@ -55,6 +58,9 @@ def build_graph(textbook_id: str) -> dict:
         "processed_chapters": len(chapters),
         "total_chapters": original_chapter_count,
         "truncated": len(chapters) < original_chapter_count,
+        "fallback_chapters": fallback_chapters,
+        "llm_chapters": len(chapters) - fallback_chapters,
+        "llm_configured": bool(settings.llm_base_url and settings.llm_api_key),
     }
     return graph
 

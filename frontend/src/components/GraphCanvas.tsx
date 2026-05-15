@@ -14,7 +14,7 @@ type Props = {
 
 export type GraphLayoutMode = "chapter-map" | "force";
 
-const colors = ["#1e40af", "#047857", "#b45309", "#be123c", "#6d28d9", "#0f766e", "#334155"];
+const sourceBorderColors = ["#1e40af", "#047857", "#b45309", "#be123c", "#6d28d9", "#0f766e", "#334155"];
 const relationColors: Record<string, string> = {
   prerequisite: "#dc2626",
   parallel: "#64748b",
@@ -25,8 +25,15 @@ const relationColors: Record<string, string> = {
 export function GraphCanvas({ nodes, edges, query, layoutMode, rootLabel, selectedNodeId, onSelect }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const cyRef = useRef<cytoscape.Core | null>(null);
+  const onSelectRef = useRef(onSelect);
   const nodeMap = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
   const textbookIds = useMemo(() => Array.from(new Set(nodes.map((node) => node.textbook_id))), [nodes]);
+  const maxFrequency = useMemo(() => Math.max(1, ...nodes.map((node) => node.frequency || 1)), [nodes]);
+  const sourceLegends = useMemo(() => buildSourceLegends(nodes, textbookIds), [nodes, textbookIds]);
+
+  useEffect(() => {
+    onSelectRef.current = onSelect;
+  }, [onSelect]);
 
   useEffect(() => {
     if (!containerRef.current) {
@@ -34,8 +41,8 @@ export function GraphCanvas({ nodes, edges, query, layoutMode, rootLabel, select
     }
     const elements =
       layoutMode === "chapter-map"
-        ? buildChapterMapElements(nodes, edges, nodeMap, textbookIds, query, rootLabel)
-        : buildForceElements(nodes, edges, nodeMap, textbookIds, query);
+        ? buildChapterMapElements(nodes, edges, nodeMap, textbookIds, maxFrequency, query, rootLabel)
+        : buildForceElements(nodes, edges, nodeMap, textbookIds, maxFrequency, query);
     const cy = cytoscape({
       container: containerRef.current,
       elements,
@@ -57,9 +64,10 @@ export function GraphCanvas({ nodes, edges, query, layoutMode, rootLabel, select
         {
           selector: ".knowledge-node",
           style: {
-            "background-color": "data(color)",
-            width: "mapData(frequency, 1, 8, 30, 76)",
-            height: "mapData(frequency, 1, 8, 30, 76)"
+            "background-color": "data(fillColor)",
+            "border-color": "data(sourceColor)",
+            width: "data(size)",
+            height: "data(size)"
           }
         },
         {
@@ -136,7 +144,7 @@ export function GraphCanvas({ nodes, edges, query, layoutMode, rootLabel, select
     cy.on("tap", "node", (event) => {
       const node = nodeMap.get(event.target.id());
       if (node) {
-        onSelect(node);
+        onSelectRef.current(node);
       }
     });
     cy.ready(() => cy.fit(undefined, 48));
@@ -145,7 +153,7 @@ export function GraphCanvas({ nodes, edges, query, layoutMode, rootLabel, select
       cy.destroy();
       cyRef.current = null;
     };
-  }, [nodes, edges, nodeMap, onSelect, query, layoutMode, rootLabel, textbookIds]);
+  }, [nodes, edges, nodeMap, query, layoutMode, rootLabel, textbookIds, maxFrequency]);
 
   useEffect(() => {
     const cy = cyRef.current;
@@ -161,7 +169,12 @@ export function GraphCanvas({ nodes, edges, query, layoutMode, rootLabel, select
   if (nodes.length === 0) {
     return <div className="empty-state">上传教材并构建图谱后，这里会显示可交互知识网络。</div>;
   }
-  return <div ref={containerRef} className="graph-canvas" aria-label="知识图谱画布" />;
+  return (
+    <div className="graph-frame">
+      <div ref={containerRef} className="graph-canvas" aria-label="知识图谱画布" />
+      <GraphLegend sourceLegends={sourceLegends} />
+    </div>
+  );
 }
 
 function buildForceElements(
@@ -169,11 +182,12 @@ function buildForceElements(
   edges: KnowledgeEdge[],
   nodeMap: Map<string, KnowledgeNode>,
   textbookIds: string[],
+  maxFrequency: number,
   query: string
 ): cytoscape.ElementDefinition[] {
   return [
     ...nodes.map((node) => ({
-      data: knowledgeNodeData(node, textbookIds),
+      data: knowledgeNodeData(node, textbookIds, maxFrequency),
       classes: classNames("knowledge-node", isDimmed(node, query) && "dimmed")
     })),
     ...edges
@@ -187,6 +201,7 @@ function buildChapterMapElements(
   edges: KnowledgeEdge[],
   nodeMap: Map<string, KnowledgeNode>,
   textbookIds: string[],
+  maxFrequency: number,
   query: string,
   rootLabel: string
 ): cytoscape.ElementDefinition[] {
@@ -216,7 +231,7 @@ function buildChapterMapElements(
       const row = index % rowCount;
       const column = Math.floor(index / rowCount);
       elements.push({
-        data: knowledgeNodeData(node, textbookIds),
+        data: knowledgeNodeData(node, textbookIds, maxFrequency),
         position: {
           x: group.x + group.side * (220 + column * 150),
           y: group.y + (row - (rowCount - 1) / 2) * 58
@@ -234,12 +249,16 @@ function buildChapterMapElements(
   return elements;
 }
 
-function knowledgeNodeData(node: KnowledgeNode, textbookIds: string[]) {
+function knowledgeNodeData(node: KnowledgeNode, textbookIds: string[], maxFrequency: number) {
+  const frequency = node.frequency || 1;
+  const sourceIndex = Math.max(textbookIds.indexOf(node.textbook_id), 0);
   return {
     id: node.id,
     label: compactLabel(node.name, 18),
-    frequency: node.frequency || 1,
-    color: colors[Math.max(textbookIds.indexOf(node.textbook_id), 0) % colors.length]
+    frequency,
+    fillColor: frequencyFillColor(frequency, maxFrequency),
+    sourceColor: sourceBorderColors[sourceIndex % sourceBorderColors.length],
+    size: frequencySize(frequency, maxFrequency)
   };
 }
 
@@ -312,4 +331,57 @@ function compactLabel(label: string, maxLength: number) {
 
 function classNames(...items: Array<string | false>) {
   return items.filter(Boolean).join(" ");
+}
+
+function frequencySize(frequency: number, maxFrequency: number) {
+  if (maxFrequency <= 1) {
+    return 34;
+  }
+  const ratio = (frequency - 1) / (maxFrequency - 1);
+  return Math.round(34 + ratio * 42);
+}
+
+function frequencyFillColor(frequency: number, maxFrequency: number) {
+  if (maxFrequency <= 1) {
+    return "#bfdbfe";
+  }
+  const ratio = Math.max(0, Math.min(1, (frequency - 1) / (maxFrequency - 1)));
+  const start = [191, 219, 254];
+  const end = [30, 64, 175];
+  const channel = (index: number) => Math.round(start[index] + (end[index] - start[index]) * ratio);
+  return `rgb(${channel(0)}, ${channel(1)}, ${channel(2)})`;
+}
+
+function buildSourceLegends(nodes: KnowledgeNode[], textbookIds: string[]) {
+  return textbookIds.slice(0, 7).map((textbookId, index) => {
+    const node = nodes.find((item) => item.textbook_id === textbookId);
+    return {
+      id: textbookId,
+      title: compactLabel(node?.textbook_title || textbookId, 18),
+      color: sourceBorderColors[index % sourceBorderColors.length]
+    };
+  });
+}
+
+function GraphLegend({ sourceLegends }: { sourceLegends: Array<{ id: string; title: string; color: string }> }) {
+  return (
+    <aside className="graph-legend" aria-label="图谱图例">
+      <div className="legend-row">
+        <span className="legend-frequency light" />
+        <span className="legend-frequency dark" />
+        <span>频次：浅→深 / 小→大</span>
+      </div>
+      {sourceLegends.length > 0 && (
+        <div className="legend-sources">
+          <span>来源边框</span>
+          {sourceLegends.map((source) => (
+            <span key={source.id} className="legend-source">
+              <i style={{ borderColor: source.color }} />
+              {source.title}
+            </span>
+          ))}
+        </div>
+      )}
+    </aside>
+  );
 }

@@ -15,6 +15,9 @@ type GraphView = {
     processed_chapters?: number;
     total_chapters?: number;
     truncated?: boolean;
+    fallback_chapters?: number;
+    llm_chapters?: number;
+    llm_configured?: boolean;
   };
 };
 
@@ -155,8 +158,11 @@ function App() {
     }
     return graphNodes.filter((node) => node.name.includes(query) || node.definition.includes(query)).slice(0, 180);
   }, [graphNodes, query]);
-  const visibleIds = new Set(visibleNodes.map((node) => node.id));
-  const visibleEdges = graphEdges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target));
+  const graphQuality = React.useMemo(() => describeGraphQuality(graphView.metrics, graphNodes), [graphView.metrics, graphNodes]);
+  const visibleEdges = React.useMemo(() => {
+    const visibleIds = new Set(visibleNodes.map((node) => node.id));
+    return graphEdges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target));
+  }, [graphEdges, visibleNodes]);
 
   return (
     <main className="app-shell">
@@ -230,6 +236,7 @@ function App() {
               已处理 {graphView.metrics.processed_chapters || 0}/{graphView.metrics.total_chapters} 章{graphView.metrics.truncated ? "，已按上限截断" : ""}
             </span>
           )}
+          {graphQuality && <span className={graphQuality.kind === "warning" ? "status-warning" : "status-ok"}>{graphQuality.label}</span>}
         </div>
         <div className="workspace-messages">
           {error && <div role="alert" className="error-bar">{error}</div>}
@@ -335,6 +342,24 @@ function tabLabel(tab: Tab) {
     dialogue: "对话",
     report: "报告"
   }[tab];
+}
+
+function describeGraphQuality(metrics: GraphView["metrics"], nodes: KnowledgeNode[]) {
+  if (metrics?.processed_chapters) {
+    const fallbackChapters = metrics.fallback_chapters || 0;
+    if (fallbackChapters > 0) {
+      return { kind: "warning", label: `关键词降级抽取 ${fallbackChapters}/${metrics.processed_chapters} 章，质量有限` };
+    }
+    return { kind: "ok", label: `LLM 抽取 ${metrics.llm_chapters || metrics.processed_chapters} 章` };
+  }
+  if (!nodes.length) {
+    return null;
+  }
+  const fallbackNodes = nodes.filter((node) => node.metadata?.fallback).length;
+  if (fallbackNodes > 0) {
+    return { kind: "warning", label: `含关键词降级节点 ${fallbackNodes}/${nodes.length}` };
+  }
+  return null;
 }
 
 ReactDOM.createRoot(document.getElementById("root")!).render(<App />);

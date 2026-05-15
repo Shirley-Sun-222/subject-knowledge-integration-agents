@@ -38,6 +38,7 @@ export type KnowledgeNode = {
   page_start?: number;
   page_end?: number;
   sources?: string[];
+  metadata?: Record<string, unknown>;
   decision_id?: string;
   decision_action?: string;
   decision_reason?: string;
@@ -83,6 +84,9 @@ export type GraphResult = {
     processed_chapters?: number;
     total_chapters?: number;
     truncated?: boolean;
+    fallback_chapters?: number;
+    llm_chapters?: number;
+    llm_configured?: boolean;
   };
 };
 

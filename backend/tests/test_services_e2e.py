@@ -18,7 +18,11 @@ from backend.app.utils.ids import new_id
 
 def test_services_end_to_end(tmp_path: Path) -> None:
     original_database_url = settings.database_url
+    original_llm_base_url = settings.llm_base_url
+    original_llm_api_key = settings.llm_api_key
     object.__setattr__(settings, "database_url", f"sqlite:///{tmp_path / 'app.db'}")
+    object.__setattr__(settings, "llm_base_url", "")
+    object.__setattr__(settings, "llm_api_key", "")
     embedding_service._model_failed = True
     embedding_service._model = None
     try:
@@ -61,6 +65,9 @@ def test_services_end_to_end(tmp_path: Path) -> None:
 
         graph = build_graph(textbook_id)
         assert graph["nodes"]
+        assert graph["metrics"]["fallback_chapters"] == graph["metrics"]["processed_chapters"]
+        assert graph["metrics"]["llm_chapters"] == 0
+        assert graph["metrics"]["llm_configured"] is False
         assert graph["nodes"][0]["chapter_title"]
         assert graph["nodes"][0]["chapter_position"] >= 1
         assert graph["nodes"][0]["page_start"] >= 1
@@ -77,6 +84,8 @@ def test_services_end_to_end(tmp_path: Path) -> None:
         assert "当前知识库中未找到相关信息" not in answer.answer
     finally:
         object.__setattr__(settings, "database_url", original_database_url)
+        object.__setattr__(settings, "llm_base_url", original_llm_base_url)
+        object.__setattr__(settings, "llm_api_key", original_llm_api_key)
 
 
 def test_build_graph_limits_processed_chapters_and_reports_truncation(tmp_path: Path, monkeypatch) -> None:
@@ -142,6 +151,9 @@ def test_build_graph_limits_processed_chapters_and_reports_truncation(tmp_path: 
         assert graph["metrics"]["processed_chapters"] == 2
         assert graph["metrics"]["total_chapters"] == 3
         assert graph["metrics"]["truncated"] is True
+        assert graph["metrics"]["fallback_chapters"] == 0
+        assert graph["metrics"]["llm_chapters"] == 2
+        assert graph["metrics"]["llm_configured"] is False
         assert len(graph["nodes"]) == 2
         assert graph["nodes"][0]["chapter_title"] == "第 1 章"
         assert graph["nodes"][0]["chapter_position"] == 1
