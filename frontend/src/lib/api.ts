@@ -123,7 +123,7 @@ export const api = {
   async textbooks(): Promise<{ textbooks: Textbook[] }> {
     return request("/api/textbooks");
   },
-  async buildGraph(textbookId: string, maxChapters = 8): Promise<GraphResult> {
+  async buildGraph(textbookId: string, maxChapters = 3): Promise<GraphResult> {
     return request("/api/graphs/build", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
