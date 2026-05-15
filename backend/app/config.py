@@ -20,6 +20,8 @@ def _path_from_env(name: str, default: str) -> Path:
 @dataclass(frozen=True)
 class Settings:
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///./data/app.db")
+    sqlite_journal_mode: str = os.getenv("SQLITE_JOURNAL_MODE", "DELETE").upper()
+    sqlite_synchronous: str = os.getenv("SQLITE_SYNCHRONOUS", "NORMAL").upper()
     upload_dir: Path = _path_from_env("UPLOAD_DIR", "./data/uploads")
     index_dir: Path = _path_from_env("INDEX_DIR", "./data/indexes")
     generated_dir: Path = _path_from_env("GENERATED_DIR", "./data/generated")
@@ -42,6 +44,8 @@ class Settings:
     graph_extract_workers: int = int(os.getenv("GRAPH_EXTRACT_WORKERS", "2"))
     pdf_renderer: str = os.getenv("PDF_RENDERER", "playwright")
     session_workspace_ttl_seconds: int = int(os.getenv("SESSION_WORKSPACE_TTL_SECONDS", str(24 * 60 * 60)))
+    workspace_touch_interval_seconds: int = int(os.getenv("WORKSPACE_TOUCH_INTERVAL_SECONDS", "60"))
+    task_progress_write_interval_seconds: int = int(os.getenv("TASK_PROGRESS_WRITE_INTERVAL_SECONDS", "5"))
 
     @property
     def database_path(self) -> Path:

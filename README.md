@@ -100,9 +100,13 @@ OCR_MAX_PAGES=120
 OCR_LANG=chi_sim+eng
 GRAPH_MAX_CHAPTERS=30
 GRAPH_EXTRACT_WORKERS=2
+SQLITE_JOURNAL_MODE=DELETE
+SQLITE_SYNCHRONOUS=NORMAL
+WORKSPACE_TOUCH_INTERVAL_SECONDS=60
+TASK_PROGRESS_WRITE_INTERVAL_SECONDS=5
 ```
 
-`OCR_MAX_PAGES` 用于限制扫描版大 PDF 的 OCR 页数，避免云端构建长时间卡住。`GRAPH_MAX_CHAPTERS` 用于限制单次图谱构建处理的章节数，接口返回的 `metrics.truncated` 会说明是否截断。`GRAPH_EXTRACT_WORKERS` 用于控制图谱抽取的章节并发数；当启用公网 LLM 时，适度并发通常能明显缩短图谱构建时间。
+`OCR_MAX_PAGES` 用于限制扫描版大 PDF 的 OCR 页数，避免云端构建长时间卡住。`GRAPH_MAX_CHAPTERS` 用于限制单次图谱构建处理的章节数，接口返回的 `metrics.truncated` 会说明是否截断。`GRAPH_EXTRACT_WORKERS` 用于控制图谱抽取的章节并发数；当启用公网 LLM 时，适度并发通常能明显缩短图谱构建时间。`SQLITE_JOURNAL_MODE=DELETE` 和 `SQLITE_SYNCHRONOUS=NORMAL` 是公网更稳妥的 SQLite 缺省值。`WORKSPACE_TOUCH_INTERVAL_SECONDS` 与 `TASK_PROGRESS_WRITE_INTERVAL_SECONDS` 用于减少长 PDF 解析时的高频写库压力。
 
 ## 数据存储位置
 

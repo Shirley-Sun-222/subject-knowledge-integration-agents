@@ -9,6 +9,9 @@ from typing import Any, Iterator
 
 from .config import settings
 
+SQLITE_JOURNAL_MODES = {"DELETE", "TRUNCATE", "PERSIST", "MEMORY", "WAL", "OFF"}
+SQLITE_SYNCHRONOUS_MODES = {"OFF", "NORMAL", "FULL", "EXTRA"}
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -43,10 +46,13 @@ def connect() -> Iterator[sqlite3.Connection]:
 
 
 def init_db() -> None:
+    journal_mode = settings.sqlite_journal_mode if settings.sqlite_journal_mode in SQLITE_JOURNAL_MODES else "DELETE"
+    synchronous = settings.sqlite_synchronous if settings.sqlite_synchronous in SQLITE_SYNCHRONOUS_MODES else "NORMAL"
     with connect() as conn:
+        conn.execute(f"PRAGMA journal_mode={journal_mode}")
+        conn.execute(f"PRAGMA synchronous={synchronous}")
         conn.executescript(
             """
-            PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS textbooks (
                 id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL DEFAULT 'global',

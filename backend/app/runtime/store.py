@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
+from threading import Lock
+from time import monotonic
 from typing import Any
 
 from ..config import settings
@@ -26,6 +28,28 @@ def _workspace_cutoff() -> str:
 
 
 class RuntimeStateStore:
+    def __init__(self) -> None:
+        self._workspace_activity_lock = Lock()
+        self._workspace_activity: dict[str, float] = {}
+        self._clock = monotonic
+
+    def _should_record_workspace_activity(self, workspace_id: str) -> bool:
+        interval = settings.workspace_touch_interval_seconds
+        if interval <= 0:
+            return True
+        now = self._clock()
+        with self._workspace_activity_lock:
+            last = self._workspace_activity.get(workspace_id)
+        return last is None or (now - last) >= interval
+
+    def _record_workspace_activity(self, workspace_id: str) -> None:
+        with self._workspace_activity_lock:
+            self._workspace_activity[workspace_id] = self._clock()
+
+    def _forget_workspace_activity(self, workspace_id: str) -> None:
+        with self._workspace_activity_lock:
+            self._workspace_activity.pop(workspace_id, None)
+
     def clear_legacy_global_state(self) -> None:
         with connect() as conn:
             conn.execute("DELETE FROM rag_index_entries WHERE workspace_id = 'global'")
@@ -44,6 +68,8 @@ class RuntimeStateStore:
         runtime_files.cleanup_legacy_global_layout()
 
     def ensure_workspace(self, workspace_id: str) -> None:
+        if not self._should_record_workspace_activity(workspace_id):
+            return
         now = utc_now()
         with connect() as conn:
             conn.execute(
@@ -54,10 +80,14 @@ class RuntimeStateStore:
                 """,
                 (workspace_id, now, now),
             )
+        self._record_workspace_activity(workspace_id)
 
     def touch_workspace(self, workspace_id: str) -> None:
+        if not self._should_record_workspace_activity(workspace_id):
+            return
         with connect() as conn:
             conn.execute("UPDATE session_workspaces SET last_active_at = ? WHERE id = ?", (utc_now(), workspace_id))
+        self._record_workspace_activity(workspace_id)
 
     def get_workspace(self, workspace_id: str) -> dict[str, Any]:
         with connect() as conn:
@@ -97,6 +127,7 @@ class RuntimeStateStore:
         for row in textbook_rows:
             runtime_files.delete_textbook_file(workspace_id, row["id"], row["format"])
         runtime_files.delete_workspace_files(workspace_id)
+        self._forget_workspace_activity(workspace_id)
 
     def create_textbook(self, workspace_id: str, textbook_id: str, filename: str, format_name: str, size_bytes: int, created_at: str | None = None) -> dict[str, Any]:
         self.ensure_workspace(workspace_id)
@@ -171,7 +202,6 @@ class RuntimeStateStore:
         runtime_files.delete_textbook_file(workspace_id, textbook_id, textbook["format"])
 
     def get_textbook(self, workspace_id: str, textbook_id: str) -> dict[str, Any]:
-        self.touch_workspace(workspace_id)
         with connect() as conn:
             row = conn.execute("SELECT * FROM textbooks WHERE workspace_id = ? AND id = ?", (workspace_id, textbook_id)).fetchone()
             if row is None:
@@ -188,7 +218,6 @@ class RuntimeStateStore:
             return textbook
 
     def get_textbook_record(self, workspace_id: str, textbook_id: str) -> dict[str, Any]:
-        self.touch_workspace(workspace_id)
         with connect() as conn:
             row = conn.execute("SELECT * FROM textbooks WHERE workspace_id = ? AND id = ?", (workspace_id, textbook_id)).fetchone()
             if row is None:
@@ -196,7 +225,6 @@ class RuntimeStateStore:
             return row_to_dict(row)
 
     def list_textbooks(self, workspace_id: str) -> list[dict[str, Any]]:
-        self.touch_workspace(workspace_id)
         with connect() as conn:
             textbooks = [row_to_dict(row) for row in conn.execute("SELECT * FROM textbooks WHERE workspace_id = ? ORDER BY created_at DESC", (workspace_id,))]
             for textbook in textbooks:
@@ -289,7 +317,6 @@ class RuntimeStateStore:
             )
 
     def get_graph(self, workspace_id: str, textbook_id: str) -> dict[str, Any]:
-        self.touch_workspace(workspace_id)
         with connect() as conn:
             nodes = [
                 row_to_dict(row)

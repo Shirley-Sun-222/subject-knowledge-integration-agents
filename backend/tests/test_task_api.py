@@ -14,8 +14,9 @@ from backend.app.agents.report import ReportAgent
 from backend.app.config import settings
 from backend.app.db import connect, init_db
 from backend.app import main
+from backend.app.runtime import store as store_module
 from backend.app.runtime.store import state_store
-from backend.app.runtime.tasks import task_runner
+from backend.app.runtime.tasks import TaskContext, task_runner
 from backend.app.services import graph as graph_service
 from backend.app.services import rag as rag_service
 from backend.app.services.embedding import embedding_service
@@ -206,6 +207,71 @@ def test_startup_recovers_from_malformed_sqlite(monkeypatch) -> None:
         assert calls["reset"] == 1
     finally:
         monkeypatch.setattr(main, "_startup_runtime", original)
+
+
+def test_workspace_activity_writes_are_throttled(tmp_path: Path, monkeypatch) -> None:
+    workspace_id = "ws_touch_test"
+    originals = _set_runtime_paths(tmp_path)
+    original_interval = settings.workspace_touch_interval_seconds
+    original_clock = state_store._clock
+    timestamp = {"value": 0}
+    tick = {"value": 0.0}
+    try:
+        object.__setattr__(settings, "workspace_touch_interval_seconds", 60)
+        monkeypatch.setattr(state_store, "_clock", lambda: tick["value"])
+
+        def fake_utc_now() -> str:
+            timestamp["value"] += 1
+            return f"2026-05-15T00:00:{timestamp['value']:02d}+00:00"
+
+        monkeypatch.setattr(store_module, "utc_now", fake_utc_now)
+        init_db()
+        state_store._forget_workspace_activity(workspace_id)
+
+        state_store.ensure_workspace(workspace_id)
+        first = state_store.get_workspace(workspace_id)
+
+        state_store.ensure_workspace(workspace_id)
+        second = state_store.get_workspace(workspace_id)
+
+        tick["value"] = 61.0
+        state_store.ensure_workspace(workspace_id)
+        third = state_store.get_workspace(workspace_id)
+
+        assert first["last_active_at"] == second["last_active_at"]
+        assert third["last_active_at"] != second["last_active_at"]
+    finally:
+        state_store._forget_workspace_activity(workspace_id)
+        object.__setattr__(settings, "workspace_touch_interval_seconds", original_interval)
+        monkeypatch.setattr(state_store, "_clock", original_clock)
+        _restore_runtime_paths(originals)
+
+
+def test_task_context_throttles_high_frequency_progress_updates(monkeypatch) -> None:
+    recorded: list[tuple[int | None, int | None, str | None]] = []
+    original_interval = settings.task_progress_write_interval_seconds
+    try:
+        object.__setattr__(settings, "task_progress_write_interval_seconds", 60)
+        monkeypatch.setattr(
+            "backend.app.runtime.tasks.state_store.mark_task_running",
+            lambda workspace_id, task_id, phase="running", progress_total=None: None,
+        )
+        monkeypatch.setattr(
+            "backend.app.runtime.tasks.state_store.update_task_progress",
+            lambda workspace_id, task_id, **kwargs: recorded.append(
+                (kwargs.get("progress_current"), kwargs.get("progress_total"), kwargs.get("phase"))
+            ),
+        )
+
+        context = TaskContext(workspace_id=WORKSPACE_ID, task_id="task-stress")
+        context.start("parsing_textbook", progress_total=1)
+        for current in range(1, 101):
+            context.progress(phase="reading_pdf_pages", progress_current=current, progress_total=100)
+
+        assert recorded[-1] == (100, 100, "reading_pdf_pages")
+        assert len(recorded) < 35
+    finally:
+        object.__setattr__(settings, "task_progress_write_interval_seconds", original_interval)
 
 
 def test_build_graph_api_reuses_active_task_for_same_textbook(tmp_path: Path, monkeypatch) -> None:

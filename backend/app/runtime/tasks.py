@@ -3,9 +3,11 @@ from __future__ import annotations
 import logging
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from time import monotonic
 from typing import Any, Callable
 
+from ..config import settings
 from .store import state_store
 
 
@@ -22,9 +24,17 @@ def summarize_error(error: Exception) -> str:
 class TaskContext:
     workspace_id: str
     task_id: str
+    _last_phase: str | None = None
+    _last_progress_current: int | None = None
+    _last_progress_total: int | None = None
+    _last_truncated: bool | None = None
+    _last_persisted_at: float = field(default_factory=monotonic)
 
     def start(self, phase: str, progress_total: int = 0) -> None:
         state_store.mark_task_running(self.workspace_id, self.task_id, phase=phase, progress_total=progress_total)
+        self._last_phase = phase
+        self._last_progress_total = progress_total
+        self._last_persisted_at = monotonic()
 
     def progress(
         self,
@@ -34,6 +44,13 @@ class TaskContext:
         progress_total: int | None = None,
         truncated: bool | None = None,
     ) -> None:
+        if not self._should_persist_progress(
+            phase=phase,
+            progress_current=progress_current,
+            progress_total=progress_total,
+            truncated=truncated,
+        ):
+            return
         state_store.update_task_progress(
             self.workspace_id,
             self.task_id,
@@ -42,6 +59,46 @@ class TaskContext:
             progress_total=progress_total,
             truncated=truncated,
         )
+        if phase is not None:
+            self._last_phase = phase
+        if progress_current is not None:
+            self._last_progress_current = progress_current
+        if progress_total is not None:
+            self._last_progress_total = progress_total
+        if truncated is not None:
+            self._last_truncated = truncated
+        self._last_persisted_at = monotonic()
+
+    def _should_persist_progress(
+        self,
+        *,
+        phase: str | None,
+        progress_current: int | None,
+        progress_total: int | None,
+        truncated: bool | None,
+    ) -> bool:
+        if phase is not None and phase != self._last_phase:
+            return True
+        if progress_total is not None and progress_total != self._last_progress_total:
+            return True
+        if truncated is not None and truncated != self._last_truncated:
+            return True
+        if progress_current is None:
+            return False
+
+        previous = self._last_progress_current
+        total = progress_total if progress_total is not None else self._last_progress_total
+        if previous is None:
+            return True
+        if progress_current <= 2 or progress_current == previous:
+            return progress_current != previous and (phase is not None or total is not None)
+        if total and total > 0:
+            if progress_current >= total:
+                return True
+            step = max(1, total // 25)
+            if (progress_current - previous) >= step:
+                return True
+        return (monotonic() - self._last_persisted_at) >= settings.task_progress_write_interval_seconds
 
 
 class TaskRunner:
