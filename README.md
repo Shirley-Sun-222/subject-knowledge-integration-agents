@@ -120,7 +120,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-访问 http://localhost:8000。
+访问 http://localhost:8000。本地 `docker-compose.yml` 会把宿主机 `8000` 映射到容器内 `7860`；容器默认监听 `7860` 是为了兼容魔搭 Docker 创空间。
 
 首次构建需要能访问 Docker Hub、Debian apt 源、PyPI、npm registry 和 Playwright Chromium 下载源。镜像采用多阶段构建：`node:20-bookworm-slim` 只负责生成前端静态资源，`python:3.11-slim-bookworm` 负责运行 FastAPI，并安装 Tesseract OCR 和 Playwright Chromium。Docker 镜像默认使用 `requirements-docker.txt` 的轻量依赖，未安装 `sentence-transformers` 时会自动使用 hash embedding fallback，避免拉取大型 torch/CUDA 依赖。运行时数据通过 `docker-compose.yml` 挂载到本机 `data/` 与 `report/`，不会写入镜像。
 
@@ -153,6 +153,7 @@ EMBEDDING_ALLOW_DOWNLOAD=0
 OCR_ENABLED=1
 OCR_MAX_PAGES=120
 GRAPH_MAX_CHAPTERS=30
+PORT=7860
 FRONTEND_DIST=/当前工作目录/frontend/dist
 ```
 
@@ -163,6 +164,8 @@ npm --prefix frontend install
 npm --prefix frontend run build
 pip install -r requirements.txt
 ```
+
+Docker 创空间要求应用监听 `0.0.0.0:7860`，当前 `Dockerfile` 已按该端口启动。若需要运行态数据跨重启保留，建议在魔搭环境变量中把 `DATABASE_URL`、`UPLOAD_DIR`、`INDEX_DIR` 和 `GENERATED_DIR` 指向 `/mnt/workspace` 下的目录。
 
 如果魔搭运行环境不允许安装 OCR 或 Chromium 依赖，第一轮验收可先保证文本型 PDF/MD/TXT、图谱、RAG 和 Markdown 报告链路可用；PDF 导出和扫描版 OCR 再根据平台日志补依赖。
 

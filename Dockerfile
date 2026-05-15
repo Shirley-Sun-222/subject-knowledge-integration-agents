@@ -36,6 +36,7 @@ COPY README.md README.md
 COPY .env.example .env.example
 COPY --from=frontend-builder /app/frontend/dist frontend/dist
 
-ENV FRONTEND_DIST=/app/frontend/dist
-EXPOSE 8000
-CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+ENV FRONTEND_DIST=/app/frontend/dist \
+    PORT=7860
+EXPOSE 7860
+CMD ["sh", "-c", "uvicorn backend.app.main:app --host 0.0.0.0 --port ${PORT:-7860}"]
