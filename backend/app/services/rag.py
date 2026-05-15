@@ -4,7 +4,9 @@ import json
 import time
 from collections import Counter
 
-from ..db import connect, json_dumps, row_to_dict
+from ..db import utc_now
+from ..runtime.store import state_store
+from ..runtime.tasks import TaskContext, task_runner
 from ..schemas import Citation, RagQueryResponse
 from ..services.embedding import embedding_service
 from ..services.llm import llm_client
@@ -37,59 +39,123 @@ GENERIC_QUERY_TERMS = {
 }
 
 
-def build_index() -> dict:
-    with connect() as conn:
-        chapters = [
-            row_to_dict(row)
-            for row in conn.execute(
-                """
-                SELECT c.*, t.title AS textbook_title
-                FROM chapters c JOIN textbooks t ON t.id = c.textbook_id
-                ORDER BY c.textbook_id, c.position
-                """
-            )
-        ]
-        conn.execute("DELETE FROM chunks")
-        total = 0
-        for chapter in chapters:
-            chunks = chunk_text(chapter["content"], size=700, overlap=90)
-            vectors = embedding_service.embed(chunks)
-            for index, text in enumerate(chunks):
-                conn.execute(
-                    """
-                    INSERT INTO chunks (id, textbook_id, chapter_id, chunk_index, text, page_start, char_count, embedding)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        new_id("chunk"),
-                        chapter["textbook_id"],
-                        chapter["id"],
-                        index,
-                        text,
-                        chapter["page_start"],
-                        len(text),
-                        json_dumps(vectors[index]),
-                    ),
+def enqueue_build_index() -> tuple[dict, bool]:
+    is_fresh, chapter_count = state_store.rag_index_freshness()
+    if is_fresh:
+        task = state_store.create_finished_task(
+            "build_rag_index",
+            "system",
+            "global",
+            phase="cache_hit",
+            result_ref="rag-index:global",
+            progress_current=chapter_count,
+            progress_total=chapter_count,
+        )
+        return task, False
+    return task_runner.enqueue(
+        "build_rag_index",
+        "system",
+        "global",
+        _build_index_task,
+    )
+
+
+def _build_index_task(context: TaskContext) -> dict:
+    result = build_index(progress=context)
+    return {
+        "result_ref": "rag-index:global",
+        "phase": "completed",
+        "truncated": False,
+    }
+
+
+def build_index(progress: TaskContext | None = None) -> dict:
+    chapters = state_store.list_all_chapters()
+    existing_entries = state_store.list_rag_index_entries()
+    active_chapter_ids = {chapter["id"] for chapter in chapters}
+    deleted_chapter_ids = [chapter_id for chapter_id in existing_entries if chapter_id not in active_chapter_ids]
+    rebuild_targets = []
+    reused_entries = 0
+
+    for chapter in chapters:
+        signature = state_store.rag_index_signature(chapter)
+        entry = existing_entries.get(chapter["id"])
+        if entry is not None and entry["chunk_signature"] == signature:
+            reused_entries += 1
+            continue
+        rebuild_targets.append((chapter, signature))
+
+    if progress is not None:
+        progress.start("chunking_textbooks", progress_total=len(chapters))
+    chunk_rows = []
+    index_entries = []
+    processed = 0
+    for chapter in chapters:
+        signature = state_store.rag_index_signature(chapter)
+        entry = existing_entries.get(chapter["id"])
+        if entry is not None and entry["chunk_signature"] == signature:
+            processed += 1
+            if progress is not None:
+                progress.progress(
+                    phase="reusing_index_chunks" if processed < len(chapters) else "writing_index",
+                    progress_current=processed,
+                    progress_total=len(chapters),
                 )
-                total += 1
-    return {"indexed_textbooks": _count_textbooks(), "chunk_count": total}
+            continue
+        chunks = chunk_text(chapter["content"], size=700, overlap=90)
+        vectors = embedding_service.embed(chunks)
+        for index, text in enumerate(chunks):
+            chunk_rows.append(
+                {
+                    "id": new_id("chunk"),
+                    "textbook_id": chapter["textbook_id"],
+                    "chapter_id": chapter["id"],
+                    "chunk_index": index,
+                    "text": text,
+                    "page_start": chapter["page_start"],
+                    "char_count": len(text),
+                    "embedding": json.dumps(vectors[index], ensure_ascii=False),
+                }
+            )
+        index_entries.append(
+            {
+                "chapter_id": chapter["id"],
+                "textbook_id": chapter["textbook_id"],
+                "chunk_signature": signature,
+                "chunk_count": len(chunks),
+                "built_at": utc_now(),
+            }
+        )
+        processed += 1
+        if progress is not None:
+            progress.progress(
+                phase="chunking_textbooks" if processed < len(chapters) else "writing_index",
+                progress_current=processed,
+                progress_total=len(chapters),
+            )
+    if rebuild_targets or deleted_chapter_ids:
+        total = state_store.replace_chunks_for_chapters(
+            [chapter["id"] for chapter, _signature in rebuild_targets],
+            chunk_rows,
+            index_entries,
+            deleted_chapter_ids=deleted_chapter_ids,
+        )
+        _ = total
+    return {
+        "indexed_textbooks": _count_textbooks(),
+        "chunk_count": state_store.count_chunks(),
+        "reused_chapters": reused_entries,
+        "rebuilt_chapters": len(rebuild_targets),
+    }
 
 
 def query(question: str, top_k: int = 5) -> RagQueryResponse:
     started = time.perf_counter()
-    with connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT chunks.*, textbooks.title AS textbook, chapters.title AS chapter
-            FROM chunks
-            JOIN textbooks ON textbooks.id = chunks.textbook_id
-            JOIN chapters ON chapters.id = chunks.chapter_id
-            """
-        ).fetchall()
+    rows = state_store.list_chunks_with_context()
     if not rows:
         return RagQueryResponse(answer="当前知识库中未找到相关信息", citations=[], source_chunks=[], elapsed_ms=0, token_estimate=estimate_tokens([question]))
 
-    chunks = [row_to_dict(row) for row in rows]
+    chunks = rows
     vector_scores = _vector_scores(question, chunks)
     bm25_scores = _bm25_scores(question, chunks)
     ranked = []
@@ -120,8 +186,8 @@ def query(question: str, top_k: int = 5) -> RagQueryResponse:
     ]
     elapsed = int((time.perf_counter() - started) * 1000) + answer_result.get("elapsed_ms", 0)
     token_estimate = estimate_tokens([question, *(chunk["text"] for _, chunk in top), answer_result["answer"]])
-    _record_metric("rag_elapsed_ms", elapsed, {"question": question})
-    _record_metric("rag_token_estimate", token_estimate, {"question": question})
+    state_store.insert_metric("rag_elapsed_ms", elapsed, {"question": question})
+    state_store.insert_metric("rag_token_estimate", token_estimate, {"question": question})
     return RagQueryResponse(
         answer=answer_result["answer"],
         citations=citations,
@@ -132,9 +198,7 @@ def query(question: str, top_k: int = 5) -> RagQueryResponse:
 
 
 def status() -> dict:
-    with connect() as conn:
-        count = conn.execute("SELECT COUNT(*) AS count FROM chunks").fetchone()["count"]
-    return {"indexed_textbooks": _count_textbooks(), "chunk_count": count}
+    return {"indexed_textbooks": _count_textbooks(), "chunk_count": state_store.count_chunks()}
 
 
 def _vector_scores(question: str, chunks: list[dict]) -> dict[str, float]:
@@ -213,8 +277,7 @@ def _answer_with_context(question: str, top: list[tuple[float, dict]]) -> dict:
 
 
 def _count_textbooks() -> int:
-    with connect() as conn:
-        return conn.execute("SELECT COUNT(*) AS count FROM textbooks WHERE status = 'completed'").fetchone()["count"]
+    return state_store.count_completed_textbooks()
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -224,13 +287,3 @@ def _cosine(a: list[float], b: list[float]) -> float:
     if norm_a == 0 or norm_b == 0:
         return 0.0
     return dot / (norm_a * norm_b)
-
-
-def _record_metric(name: str, value: float, metadata: dict) -> None:
-    from ..db import utc_now
-
-    with connect() as conn:
-        conn.execute(
-            "INSERT INTO metrics (id, name, value, metadata, created_at) VALUES (?, ?, ?, ?, ?)",
-            (new_id("metric"), name, value, json_dumps(metadata), utc_now()),
-        )

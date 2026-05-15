@@ -7,11 +7,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .agents.report import ReportAgent
 from .config import settings
 from .db import init_db
-from .schemas import DialogueRequest, RagQueryRequest
-from .services import dialogue, graph, integration, rag, textbooks
+from .runtime.store import state_store
+from .runtime.tasks import task_runner
+from .schemas import DialogueRequest, RagQueryRequest, TaskDetail, TaskSummary
+from .services import dialogue, graph, integration, rag, reporting, textbooks
 
 
 app = FastAPI(title="学科知识整合智能体", version="0.1.0")
@@ -28,6 +29,7 @@ app.add_middleware(
 @app.on_event("startup")
 def startup() -> None:
     init_db()
+    task_runner.startup()
 
 
 @app.get("/api/health")
@@ -35,12 +37,14 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-@app.post("/api/textbooks/upload")
+@app.post("/api/textbooks/upload", status_code=202)
 async def upload_textbooks(files: list[UploadFile] = File(...)) -> dict:
     uploaded = []
     for file in files:
-        uploaded.append(await textbooks.save_and_parse_upload(file))
-    return {"textbooks": uploaded}
+        textbook = await textbooks.save_upload(file)
+        task, _ = textbooks.enqueue_parse_textbook(textbook["id"])
+        uploaded.append({"textbook": textbook, "task": _task_summary(task)})
+    return {"uploads": uploaded}
 
 
 @app.get("/api/textbooks")
@@ -48,7 +52,7 @@ def list_textbooks() -> dict:
     return {"textbooks": textbooks.list_textbooks()}
 
 
-@app.post("/api/graphs/build")
+@app.post("/api/graphs/build", status_code=202)
 def build_graph(payload: dict) -> dict:
     textbook_id = payload.get("textbook_id")
     if not textbook_id:
@@ -61,7 +65,8 @@ def build_graph(payload: dict) -> dict:
             raise HTTPException(status_code=400, detail="max_chapters must be an integer") from exc
         if max_chapters <= 0:
             raise HTTPException(status_code=400, detail="max_chapters must be greater than 0")
-    return graph.build_graph(textbook_id, max_chapters=max_chapters)
+    task, _ = graph.enqueue_build_graph(textbook_id, max_chapters=max_chapters)
+    return {"task": _task_summary(task)}
 
 
 @app.get("/api/graphs/{textbook_id}")
@@ -69,9 +74,10 @@ def get_graph(textbook_id: str) -> dict:
     return graph.get_graph(textbook_id)
 
 
-@app.post("/api/integration/run")
+@app.post("/api/integration/run", status_code=202)
 def run_integration() -> dict:
-    return integration.run_integration()
+    task, _ = integration.enqueue_integration()
+    return {"task": _task_summary(task)}
 
 
 @app.get("/api/integration")
@@ -79,9 +85,10 @@ def get_integration() -> dict:
     return integration.get_integration()
 
 
-@app.post("/api/rag/index")
+@app.post("/api/rag/index", status_code=202)
 def build_rag_index() -> dict:
-    return rag.build_index()
+    task, _ = rag.enqueue_build_index()
+    return {"task": _task_summary(task)}
 
 
 @app.get("/api/rag/status")
@@ -106,15 +113,65 @@ def dialogue_messages() -> dict:
 
 @app.get("/api/report/integration")
 def integration_report() -> dict:
-    report = ReportAgent().generate_markdown()
-    return {"markdown": report}
+    return reporting.get_report_markdown()
+
+
+@app.post("/api/report/pdf/build", status_code=202)
+def integration_report_pdf_build() -> dict:
+    task, _ = reporting.enqueue_report_pdf_build()
+    return {"task": _task_summary(task)}
 
 
 @app.get("/api/report/pdf")
 async def integration_report_pdf() -> FileResponse:
-    path = await ReportAgent().generate_pdf()
+    path = await reporting.get_report_pdf_path()
     return FileResponse(path, media_type="application/pdf", filename="整合报告.pdf")
+
+
+@app.get("/api/tasks")
+def list_tasks(status: str | None = None, task_type: str | None = None, resource_type: str | None = None, resource_id: str | None = None) -> dict:
+    tasks = state_store.list_tasks(status=status, task_type=task_type, resource_type=resource_type, resource_id=resource_id)
+    return {"tasks": [_task_detail(task) for task in tasks]}
+
+
+@app.get("/api/tasks/{task_id}")
+def get_task(task_id: str) -> dict:
+    try:
+        task = state_store.get_task(task_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="task not found") from exc
+    return {"task": _task_detail(task)}
 
 
 if settings.frontend_dist and settings.frontend_dist.exists():
     app.mount("/", StaticFiles(directory=str(settings.frontend_dist), html=True), name="frontend")
+
+
+def _task_summary(task: dict) -> dict:
+    return TaskSummary(
+        id=task["id"],
+        task_type=task["task_type"],
+        resource_type=task["resource_type"],
+        resource_id=task["resource_id"],
+        status=task["status"],
+        phase=task["phase"],
+    ).model_dump()
+
+
+def _task_detail(task: dict) -> dict:
+    return TaskDetail(
+        id=task["id"],
+        task_type=task["task_type"],
+        resource_type=task["resource_type"],
+        resource_id=task["resource_id"],
+        status=task["status"],
+        phase=task["phase"],
+        progress_current=task.get("progress_current", 0),
+        progress_total=task.get("progress_total", 0),
+        truncated=bool(task.get("truncated", False)),
+        error_summary=task.get("error_summary"),
+        result_ref=task.get("result_ref"),
+        created_at=task["created_at"],
+        started_at=task.get("started_at"),
+        finished_at=task.get("finished_at"),
+    ).model_dump()

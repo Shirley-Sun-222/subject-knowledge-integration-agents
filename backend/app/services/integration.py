@@ -4,62 +4,49 @@ from collections import Counter
 
 from ..agents.alignment import AlignmentAgent
 from ..agents.compression import CompressionPlannerAgent
-from ..db import connect, json_dumps, json_loads, row_to_dict
+from ..runtime.store import state_store
+from ..runtime.tasks import TaskContext, task_runner
 from .graph import get_all_graph_nodes
 
 
-def run_integration() -> dict:
+def enqueue_integration() -> tuple[dict, bool]:
+    return task_runner.enqueue(
+        "run_integration",
+        "system",
+        "global",
+        _run_integration_task,
+    )
+
+
+def _run_integration_task(context: TaskContext) -> dict:
+    context.start("aligning_nodes", progress_total=1)
+    result = run_integration(progress=context)
+    return {
+        "result_ref": "integration:global",
+        "phase": "completed",
+        "truncated": False,
+    }
+
+
+def run_integration(progress: TaskContext | None = None) -> dict:
     nodes = get_all_graph_nodes()
-    with connect() as conn:
-        original_chars = conn.execute("SELECT COALESCE(SUM(total_chars), 0) AS total FROM textbooks").fetchone()["total"]
+    original_chars = state_store.original_chars()
     groups = AlignmentAgent().group_nodes(nodes)
+    if progress is not None:
+        progress.progress(phase="planning_compression", progress_current=0, progress_total=1)
     decisions, stats = CompressionPlannerAgent().plan(groups, original_chars)
-    with connect() as conn:
-        conn.execute("DELETE FROM integration_decisions")
-        for decision in decisions:
-            conn.execute(
-                """
-                INSERT INTO integration_decisions (id, action, affected_nodes, result_node, reason, confidence, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    decision.id,
-                    decision.action,
-                    json_dumps(decision.affected_nodes),
-                    decision.result_node,
-                    decision.reason,
-                    decision.confidence,
-                    decision.created_at,
-                ),
-            )
+    state_store.replace_integration_decisions(decisions)
+    if progress is not None:
+        progress.progress(phase="writing_integration", progress_current=1, progress_total=1)
     return get_integration(stats)
 
 
 def get_decisions() -> list[dict]:
-    with connect() as conn:
-        decisions = [row_to_dict(row) for row in conn.execute("SELECT * FROM integration_decisions ORDER BY created_at")]
-    for decision in decisions:
-        decision["affected_nodes"] = json_loads(decision["affected_nodes"], [])
-    return decisions
+    return state_store.list_integration_decisions()
 
 
 def update_decision(decision: dict) -> None:
-    with connect() as conn:
-        conn.execute(
-            """
-            UPDATE integration_decisions
-            SET action = ?, affected_nodes = ?, result_node = ?, reason = ?, confidence = ?
-            WHERE id = ?
-            """,
-            (
-                decision["action"],
-                json_dumps(decision["affected_nodes"]),
-                decision.get("result_node"),
-                decision["reason"],
-                decision["confidence"],
-                decision["id"],
-            ),
-        )
+    state_store.update_integration_decision(decision)
 
 
 def get_integration(stats: dict | None = None) -> dict:
@@ -89,10 +76,9 @@ def get_integration(stats: dict | None = None) -> dict:
                 }
             )
     source_ids = {node["id"] for node in integrated_nodes}
-    with connect() as conn:
-        edges = [row_to_dict(row) for row in conn.execute("SELECT * FROM knowledge_edges")]
-        original_chars = conn.execute("SELECT COALESCE(SUM(total_chars), 0) AS total FROM textbooks").fetchone()["total"]
-    filtered_edges = [edge for edge in edges if edge["source"] in source_ids and edge["target"] in source_ids]
+    all_edges = state_store.list_all_graph_edges()
+    filtered_edges = [edge for edge in all_edges if edge["source"] in source_ids and edge["target"] in source_ids]
+    original_chars = state_store.original_chars()
     if stats is None:
         kept_chars = sum(min(len(node["definition"]) + len(node["source_excerpt"]), 420) for node in integrated_nodes)
         stats = {
@@ -108,4 +94,3 @@ def get_integration(stats: dict | None = None) -> dict:
         "removed_node_ids": sorted(removed),
         "stats": {**stats, "decision_counts": dict(action_counts), "node_count": len(integrated_nodes), "edge_count": len(filtered_edges)},
     }
-

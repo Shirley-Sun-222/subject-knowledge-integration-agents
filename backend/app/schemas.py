@@ -5,6 +5,11 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+TaskStatus = Literal["queued", "running", "succeeded", "failed"]
+TaskType = Literal["parse_textbook", "build_graph", "run_integration", "build_rag_index", "build_report_pdf"]
+ResourceType = Literal["textbook", "system", "report"]
+
+
 class Textbook(BaseModel):
     id: str
     filename: str
@@ -103,3 +108,22 @@ class DialogueResponse(BaseModel):
     updated_decision: IntegrationDecision | None = None
     graph_updated: bool = False
 
+
+class TaskSummary(BaseModel):
+    id: str
+    task_type: TaskType
+    resource_type: ResourceType
+    resource_id: str
+    status: TaskStatus
+    phase: str
+
+
+class TaskDetail(TaskSummary):
+    progress_current: int = 0
+    progress_total: int = 0
+    truncated: bool = False
+    error_summary: str | None = None
+    result_ref: str | None = None
+    created_at: str
+    started_at: str | None = None
+    finished_at: str | None = None

@@ -1,9 +1,14 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { Download, FileText, GitMerge, MessageSquare, Network, Play, Search, UploadCloud } from "lucide-react";
-import { GraphCanvas, type GraphLayoutMode } from "./components/GraphCanvas";
-import { api, IntegrationResult, KnowledgeEdge, KnowledgeNode, RagResponse, Textbook } from "./lib/api";
+import { api, type IntegrationResult, type KnowledgeEdge, type KnowledgeNode, type RagResponse, type TaskDetail, type Textbook } from "./lib/api";
+import { taskLabel, useTaskWorkflow } from "./lib/workflow";
+import type { GraphLayoutMode } from "./components/GraphCanvas";
 import "./styles.css";
+
+const GraphCanvas = React.lazy(() =>
+  import("./components/GraphCanvas").then((module) => ({ default: module.GraphCanvas }))
+);
 
 type Tab = "integration" | "rag" | "dialogue" | "report";
 type GraphMode = "empty" | "single" | "integration";
@@ -39,12 +44,9 @@ function App() {
   const [dialogueMessage, setDialogueMessage] = React.useState("");
   const [dialogueReply, setDialogueReply] = React.useState("");
   const [report, setReport] = React.useState("");
+  const deferredQuery = React.useDeferredValue(query);
 
-  React.useEffect(() => {
-    refresh({ loadIntegrationGraph: true });
-  }, []);
-
-  async function run<T>(label: string, action: () => Promise<T>): Promise<T | undefined> {
+  const run = React.useCallback(async <T,>(label: string, action: () => Promise<T>): Promise<T | undefined> => {
     setBusy(label);
     setError("");
     try {
@@ -55,55 +57,128 @@ function App() {
     } finally {
       setBusy("");
     }
-  }
+  }, []);
 
-  async function refresh(options: { loadIntegrationGraph?: boolean } = {}) {
-    const result = await api.textbooks();
-    setTextbooks(result.textbooks);
-    setRagStatus(await api.ragStatus());
-    const current = await api.integration();
-    setIntegration(current);
-    if (options.loadIntegrationGraph && current.nodes.length) {
-      setGraphNodes(current.nodes);
-      setGraphEdges(current.edges);
+  const refresh = React.useCallback(async (options: { loadIntegrationGraph?: boolean } = {}) => {
+    const textbookResult = await api.textbooks();
+    const ragResult = await api.ragStatus();
+    const integrationResult = await api.integration();
+    setTextbooks(textbookResult.textbooks);
+    setRagStatus(ragResult);
+    setIntegration(integrationResult);
+    if (options.loadIntegrationGraph && integrationResult.nodes.length) {
+      setGraphNodes(integrationResult.nodes);
+      setGraphEdges(integrationResult.edges);
       setGraphView({ mode: "integration", title: "跨教材整合图谱" });
     }
+    return {
+      textbooks: textbookResult.textbooks,
+      ragStatus: ragResult,
+      integration: integrationResult
+    };
+  }, []);
+
+  const onTaskSucceeded = React.useCallback(
+    async (task: TaskDetail) => {
+      const snapshot = await refresh({ loadIntegrationGraph: false });
+      if (task.task_type === "parse_textbook") {
+        return;
+      }
+      if (task.task_type === "build_graph") {
+        const graphResult = await api.graph(task.resource_id);
+        const textbook = snapshot.textbooks.find((book) => book.id === task.resource_id);
+        setGraphNodes(graphResult.nodes);
+        setGraphEdges(graphResult.edges);
+        setSelectedNode(null);
+        setGraphView({
+          mode: "single",
+          title: textbook ? `单本图谱：${textbook.title}` : "单本图谱",
+          metrics: {
+            processed_chapters: task.progress_current,
+            total_chapters: task.progress_total,
+            truncated: task.truncated
+          }
+        });
+        return;
+      }
+      if (task.task_type === "run_integration") {
+        setIntegration(snapshot.integration);
+        if (snapshot.integration.nodes.length) {
+          setGraphNodes(snapshot.integration.nodes);
+          setGraphEdges(snapshot.integration.edges);
+          setSelectedNode(null);
+          setGraphView({ mode: "integration", title: "跨教材整合图谱" });
+        }
+        return;
+      }
+      if (task.task_type === "build_rag_index") {
+        setRagStatus(snapshot.ragStatus);
+      }
+    },
+    [refresh]
+  );
+
+  const onTaskFailed = React.useCallback(
+    async (task: TaskDetail) => {
+      setError(task.error_summary || `${taskLabel(task)}失败`);
+      await refresh({ loadIntegrationGraph: false });
+    },
+    [refresh]
+  );
+
+  const { activeTasks, lastFailedTask, trackTask, activeTaskFor } = useTaskWorkflow({
+    onTaskSucceeded,
+    onTaskFailed
+  });
+
+  async function settleImmediateTask(taskId: string) {
+    const detail = (await api.task(taskId)).task;
+    if (detail.status === "succeeded") {
+      await onTaskSucceeded(detail);
+    }
+    if (detail.status === "failed") {
+      await onTaskFailed(detail);
+    }
   }
+
+  React.useEffect(() => {
+    void refresh({ loadIntegrationGraph: true });
+  }, [refresh]);
+
+  React.useEffect(() => {
+    if (lastFailedTask?.error_summary) {
+      setError(lastFailedTask.error_summary);
+    }
+  }, [lastFailedTask]);
 
   async function upload(files: FileList | null) {
     if (!files?.length) {
       return;
     }
-    await run("上传并解析教材", async () => {
-      await api.upload(files);
+    await run("上传教材", async () => {
+      const result = await api.upload(files);
+      result.uploads.forEach((item) => trackTask(item.task));
       await refresh({ loadIntegrationGraph: false });
     });
   }
 
   async function buildGraph(textbookId: string) {
-    const result = await run("构建单本图谱", () => api.buildGraph(textbookId));
+    const result = await run("提交图谱任务", () => api.buildGraph(textbookId));
     if (result) {
-      const textbook = textbooks.find((book) => book.id === textbookId);
-      setGraphNodes(result.nodes);
-      setGraphEdges(result.edges);
-      setSelectedNode(null);
-      setGraphView({
-        mode: "single",
-        title: textbook ? `单本图谱：${textbook.title}` : "单本图谱",
-        metrics: result.metrics
-      });
-      await refresh({ loadIntegrationGraph: false });
+      trackTask(result.task);
+      if (result.task.status !== "queued" && result.task.status !== "running") {
+        await settleImmediateTask(result.task.id);
+      }
     }
   }
 
   async function integrate() {
-    const result = await run("跨教材整合", () => api.runIntegration());
+    const result = await run("提交整合任务", () => api.runIntegration());
     if (result) {
-      setIntegration(result);
-      setGraphNodes(result.nodes);
-      setGraphEdges(result.edges);
-      setSelectedNode(null);
-      setGraphView({ mode: "integration", title: "跨教材整合图谱" });
+      trackTask(result.task);
+      if (result.task.status !== "queued" && result.task.status !== "running") {
+        await settleImmediateTask(result.task.id);
+      }
     }
   }
 
@@ -118,9 +193,22 @@ function App() {
   }
 
   async function indexRag() {
-    const result = await run("建立 RAG 索引", () => api.indexRag());
+    const result = await run("提交索引任务", () => api.indexRag());
     if (result) {
-      setRagStatus(result);
+      trackTask(result.task);
+      if (result.task.status !== "queued" && result.task.status !== "running") {
+        await settleImmediateTask(result.task.id);
+      }
+    }
+  }
+
+  async function buildReportPdf() {
+    const result = await run("提交 PDF 任务", () => api.buildReportPdf());
+    if (result) {
+      trackTask(result.task);
+      if (result.task.status !== "queued" && result.task.status !== "running") {
+        await settleImmediateTask(result.task.id);
+      }
     }
   }
 
@@ -140,8 +228,13 @@ function App() {
     }
     const result = await run("处理教师反馈", () => api.dialogue(dialogueMessage));
     if (result) {
-      setDialogueReply((result as any).reply);
-      await integrate();
+      setDialogueReply((result as { reply: string }).reply);
+      const snapshot = await refresh({ loadIntegrationGraph: graphView.mode === "integration" });
+      if (graphView.mode === "integration" && snapshot.integration.nodes.length) {
+        setGraphNodes(snapshot.integration.nodes);
+        setGraphEdges(snapshot.integration.edges);
+        setSelectedNode(null);
+      }
     }
   }
 
@@ -153,11 +246,12 @@ function App() {
   }
 
   const visibleNodes = React.useMemo(() => {
-    if (!query.trim()) {
+    if (!deferredQuery.trim()) {
       return graphNodes.slice(0, 180);
     }
-    return graphNodes.filter((node) => node.name.includes(query) || node.definition.includes(query)).slice(0, 180);
-  }, [graphNodes, query]);
+    return graphNodes.filter((node) => node.name.includes(deferredQuery) || node.definition.includes(deferredQuery)).slice(0, 180);
+  }, [graphNodes, deferredQuery]);
+
   const graphQuality = React.useMemo(() => describeGraphQuality(graphView.metrics, graphNodes), [graphView.metrics, graphNodes]);
   const visibleEdges = React.useMemo(() => {
     const visibleIds = new Set(visibleNodes.map((node) => node.id));
@@ -193,7 +287,11 @@ function App() {
                 <span className={`status ${book.status}`}>{book.status}</span>
                 {book.error && <span className="row-error">{book.error}</span>}
               </div>
-              <button onClick={() => buildGraph(book.id)} disabled={book.status !== "completed" || !!busy} aria-label="构建图谱">
+              <button
+                onClick={() => buildGraph(book.id)}
+                disabled={book.status !== "completed" || !!activeTaskFor("build_graph", book.id) || !!activeTaskFor("parse_textbook", book.id)}
+                aria-label="构建图谱"
+              >
                 <Play size={16} />
               </button>
             </article>
@@ -222,9 +320,9 @@ function App() {
               关系网络
             </button>
           </div>
-          <button onClick={integrate} disabled={!!busy}><GitMerge size={16} />跨教材整合</button>
-          <button onClick={showIntegrationGraph} disabled={!!busy || !integration?.nodes.length}><Network size={16} />显示整合图谱</button>
-          <button onClick={indexRag} disabled={!!busy}><FileText size={16} />建立 RAG 索引</button>
+          <button onClick={integrate} disabled={!!activeTaskFor("run_integration")}><GitMerge size={16} />跨教材整合</button>
+          <button onClick={showIntegrationGraph} disabled={!integration?.nodes.length}><Network size={16} />显示整合图谱</button>
+          <button onClick={indexRag} disabled={!!activeTaskFor("build_rag_index")}><FileText size={16} />建立 RAG 索引</button>
         </div>
         <div className="graph-status">
           <div>
@@ -241,16 +339,23 @@ function App() {
         <div className="workspace-messages">
           {error && <div role="alert" className="error-bar">{error}</div>}
           {busy && <div className="busy-bar">{busy}中...</div>}
+          {activeTasks.map((task) => (
+            <div key={task.id} className="busy-bar">
+              {taskLabel(task)} · {renderTaskProgress(task)}
+            </div>
+          ))}
         </div>
-        <GraphCanvas
-          nodes={visibleNodes}
-          edges={visibleEdges}
-          query={query}
-          layoutMode={graphLayoutMode}
-          rootLabel={graphView.title}
-          selectedNodeId={selectedNode?.id}
-          onSelect={setSelectedNode}
-        />
+        <React.Suspense fallback={<div className="empty-state">正在加载图谱引擎...</div>}>
+          <GraphCanvas
+            nodes={visibleNodes}
+            edges={visibleEdges}
+            query={deferredQuery}
+            layoutMode={graphLayoutMode}
+            rootLabel={graphView.title}
+            selectedNodeId={selectedNode?.id}
+            onSelect={setSelectedNode}
+          />
+        </React.Suspense>
       </section>
 
       <aside className="right-panel">
@@ -325,6 +430,7 @@ function App() {
             <h2>整合报告</h2>
             <div className="button-row">
               <button onClick={loadReport} disabled={!!busy}>生成 Markdown</button>
+              <button onClick={buildReportPdf} disabled={!!activeTaskFor("build_report_pdf")}><FileText size={16} />生成 PDF</button>
               <a className="download-link" href="/api/report/pdf"><Download size={16} />导出 PDF</a>
             </div>
             <pre className="report-preview">{report || "生成报告后将在这里预览 Markdown。"}</pre>
@@ -350,7 +456,7 @@ function describeGraphQuality(metrics: GraphView["metrics"], nodes: KnowledgeNod
     if (fallbackChapters > 0) {
       return { kind: "warning", label: `关键词降级抽取 ${fallbackChapters}/${metrics.processed_chapters} 章，质量有限` };
     }
-    return { kind: "ok", label: `LLM 抽取 ${metrics.llm_chapters || metrics.processed_chapters} 章` };
+    return { kind: "ok", label: `已处理 ${metrics.processed_chapters} 章图谱` };
   }
   if (!nodes.length) {
     return null;
@@ -360,6 +466,13 @@ function describeGraphQuality(metrics: GraphView["metrics"], nodes: KnowledgeNod
     return { kind: "warning", label: `含关键词降级节点 ${fallbackNodes}/${nodes.length}` };
   }
   return null;
+}
+
+function renderTaskProgress(task: TaskDetail) {
+  if (task.progress_total > 0) {
+    return `${task.progress_current}/${task.progress_total}${task.truncated ? "，已截断" : ""}`;
+  }
+  return task.status;
 }
 
 ReactDOM.createRoot(document.getElementById("root")!).render(<App />);

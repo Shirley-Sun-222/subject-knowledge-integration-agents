@@ -3,53 +3,52 @@ from __future__ import annotations
 import html
 from pathlib import Path
 
-from ..config import ROOT_DIR, settings
-from ..db import connect, json_loads, row_to_dict
+from ..config import settings
+from ..runtime.files import runtime_files
+from ..runtime.store import state_store
 
 
 class ReportAgent:
-    def generate_markdown(self) -> str:
+    def render_markdown(self) -> str:
         data = self.collect_data()
-        report = _render_markdown(data)
-        report_path = ROOT_DIR / "report" / "整合报告.md"
-        report_path.parent.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(report, encoding="utf-8")
+        return _render_markdown(data)
+
+    def generate_markdown(self) -> str:
+        report = self.render_markdown()
+        runtime_files.report_markdown_path().write_text(report, encoding="utf-8")
         return report
 
     def collect_data(self) -> dict:
-        with connect() as conn:
-            textbooks = [row_to_dict(row) for row in conn.execute("SELECT * FROM textbooks ORDER BY created_at")]
-            nodes = {row["id"]: row_to_dict(row) for row in conn.execute("SELECT * FROM knowledge_nodes")}
-            node_count = conn.execute("SELECT COUNT(*) AS count FROM knowledge_nodes").fetchone()["count"]
-            edge_count = conn.execute("SELECT COUNT(*) AS count FROM knowledge_edges").fetchone()["count"]
-            decisions = [row_to_dict(row) for row in conn.execute("SELECT * FROM integration_decisions ORDER BY created_at")]
-            metrics = [row_to_dict(row) for row in conn.execute("SELECT * FROM metrics ORDER BY created_at DESC LIMIT 20")]
-        for decision in decisions:
-            decision["affected_nodes"] = json_loads(decision["affected_nodes"], [])
+        data = state_store.collect_report_data()
+        textbooks = data["textbooks"]
+        decisions = data["decisions"]
         original_chars = sum(item["total_chars"] for item in textbooks)
         kept_decisions = [item for item in decisions if item["action"] != "remove"]
-        integrated_chars = _estimate_integrated_chars(kept_decisions, nodes, original_chars)
+        integrated_chars = _estimate_integrated_chars(kept_decisions, data["nodes"], original_chars)
         action_counts = {action: sum(1 for item in decisions if item["action"] == action) for action in ["merge", "keep", "remove"]}
         return {
             "textbooks": textbooks,
             "original_chars": original_chars,
             "integrated_chars": integrated_chars,
             "compression_ratio": integrated_chars / original_chars if original_chars else 0,
-            "node_count": node_count,
-            "edge_count": edge_count,
+            "node_count": data["node_count"],
+            "edge_count": data["edge_count"],
             "integrated_node_count": len(kept_decisions),
             "decisions": decisions,
             "action_counts": action_counts,
-            "metrics": metrics,
+            "metrics": data["metrics"],
         }
 
     async def generate_pdf(self) -> Path:
         markdown = self.generate_markdown()
-        output = settings.generated_dir / "整合报告.pdf"
-        try:
-            await _html_to_pdf(_markdown_to_html(markdown), output)
-        except Exception:
-            _reportlab_pdf(markdown, output)
+        output = runtime_files.report_pdf_path()
+        if settings.pdf_renderer == "playwright":
+            try:
+                await _html_to_pdf(_markdown_to_html(markdown), output)
+                return output
+            except Exception:
+                pass
+        _reportlab_pdf(markdown, output)
         return output
 
 

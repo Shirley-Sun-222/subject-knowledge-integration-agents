@@ -39,6 +39,8 @@ class Settings:
     ocr_max_pages: int = int(os.getenv("OCR_MAX_PAGES", "120"))
     ocr_lang: str = os.getenv("OCR_LANG", "chi_sim+eng")
     graph_max_chapters: int = int(os.getenv("GRAPH_MAX_CHAPTERS", "30"))
+    graph_extract_workers: int = int(os.getenv("GRAPH_EXTRACT_WORKERS", "2"))
+    pdf_renderer: str = os.getenv("PDF_RENDERER", "playwright")
 
     @property
     def database_path(self) -> Path:

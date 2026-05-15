@@ -34,6 +34,7 @@ npm run dev
 
 - 前端开发服务：http://localhost:5173
 - 后端 API：http://localhost:8000/api/health
+- 本地开发时，上传解析、图谱构建、整合、RAG 建索引和 PDF 生成会以后台任务运行，前端通过 `/api/tasks` 轮询状态
 
 如果只运行后端：
 
@@ -98,9 +99,10 @@ OCR_ENABLED=1
 OCR_MAX_PAGES=120
 OCR_LANG=chi_sim+eng
 GRAPH_MAX_CHAPTERS=30
+GRAPH_EXTRACT_WORKERS=2
 ```
 
-`OCR_MAX_PAGES` 用于限制扫描版大 PDF 的 OCR 页数，避免云端构建长时间卡住。`GRAPH_MAX_CHAPTERS` 用于限制单次图谱构建处理的章节数，接口返回的 `metrics.truncated` 会说明是否截断。
+`OCR_MAX_PAGES` 用于限制扫描版大 PDF 的 OCR 页数，避免云端构建长时间卡住。`GRAPH_MAX_CHAPTERS` 用于限制单次图谱构建处理的章节数，接口返回的 `metrics.truncated` 会说明是否截断。`GRAPH_EXTRACT_WORKERS` 用于控制图谱抽取的章节并发数；当启用公网 LLM 时，适度并发通常能明显缩短图谱构建时间。
 
 ## 数据存储位置
 
@@ -113,6 +115,30 @@ GRAPH_MAX_CHAPTERS=30
 
 部署到云端时，这些路径位于云实例文件系统。若需要跨重启长期保留教材和索引，应为 `data/` 配置持久化卷或对象存储同步。
 
+## 后台任务接口
+
+为避免公网同步请求超时，所有长写操作都采用“启动任务 + 轮询状态”的接口模式：
+
+- `POST /api/textbooks/upload`：保存原始教材并启动后台解析
+- `POST /api/graphs/build`：启动单本教材图谱构建
+- `POST /api/integration/run`：启动跨教材整合
+- `POST /api/rag/index`：启动 RAG 索引构建
+- `POST /api/report/pdf/build`：启动 PDF 报告生成
+- `GET /api/tasks` / `GET /api/tasks/{task_id}`：查询任务状态、阶段、进度和错误摘要
+
+以上启动接口统一返回 `202 Accepted`。读取接口如 `GET /api/textbooks`、`GET /api/graphs/{textbook_id}`、`GET /api/integration`、`GET /api/rag/status`、`GET /api/report/integration` 保持同步只读。
+
+前端任务轮询采用“前快后慢”的自适应策略：新任务和高活跃阶段更快轮询，运行时间越久轮询间隔越大，以减轻公网压力。
+
+## 当前性能优化
+
+- `GET /api/textbooks` 现在只返回教材摘要和计数，不再把完整章节正文回传到首页
+- 图谱构建支持按章节并发抽取，默认 `GRAPH_EXTRACT_WORKERS=2`
+- 相同教材和相同章节上限的单本图谱请求会直接命中缓存，不再重复抽取
+- PDF 解析任务会显示页级进度，并先快速判断 `digital / mixed / scanned` 模式
+- RAG 建索引支持完整 cache hit 和按章节增量复用，只重建发生变化的章节
+- `GraphCanvas` 与 Cytoscape 已拆为懒加载 chunk，首页主 bundle 明显缩小
+
 ## Docker 运行
 
 ```bash
@@ -122,7 +148,58 @@ docker compose up --build
 
 访问 http://localhost:8000。本地 `docker-compose.yml` 会把宿主机 `8000` 映射到容器内 `7860`；容器默认监听 `7860` 是为了兼容魔搭 Docker 创空间。
 
-首次构建需要能访问 Docker Hub、Debian apt 源、PyPI、npm registry 和 Playwright Chromium 下载源。镜像采用多阶段构建：`node:20-bookworm-slim` 只负责生成前端静态资源，`python:3.11-slim-bookworm` 负责运行 FastAPI，并安装 Tesseract OCR 和 Playwright Chromium。Docker 镜像默认使用 `requirements-docker.txt` 的轻量依赖，未安装 `sentence-transformers` 时会自动使用 hash embedding fallback，避免拉取大型 torch/CUDA 依赖。运行时数据通过 `docker-compose.yml` 挂载到本机 `data/` 与 `report/`，不会写入镜像。
+首次构建需要能访问 Docker Hub、Debian apt 源、PyPI 和 npm registry。镜像采用多阶段构建：`node:20-bookworm-slim` 只负责生成前端静态资源，`python:3.11-slim-bookworm` 负责运行 FastAPI，并安装 Tesseract OCR。Docker 镜像默认使用 `requirements-docker.txt` 的轻量依赖，未安装 `sentence-transformers` 时会自动使用 hash embedding fallback，避免拉取大型 torch/CUDA 依赖。运行时数据通过 `docker-compose.yml` 挂载到本机 `data/` 与 `report/`，不会写入镜像。
+
+当前 Docker 默认已经进一步轻量化：
+
+- 默认不预装 Playwright Chromium 浏览器
+- 默认 `PDF_RENDERER=reportlab`
+- `requirements-docker.txt` 去掉了未使用的 `faiss-cpu`、`rank-bm25`、`requests`
+- 额外提供 `INSTALL_OCR=0` 的无 OCR 轻量构建变体
+
+| 镜像 | 构建参数 | OCR | 浏览器 PDF | 适用场景 | 实测体积 |
+| --- | --- | --- | --- | --- | ---: |
+| `light` | `INSTALL_OCR=0`, `INSTALL_PLAYWRIGHT_BROWSER=0` | 否 | 否 | 文本型教材、最小体积、最快构建 | 约 110.3 MiB |
+| `standard` | `INSTALL_OCR=1`, `INSTALL_PLAYWRIGHT_BROWSER=0` | 是 | 否 | 默认公网部署，支持扫描版教材，PDF 走 `reportlab` | 约 147.0 MiB |
+| `full` | `INSTALL_OCR=1`, `INSTALL_PLAYWRIGHT_BROWSER=1` | 是 | 是 | 需要扫描版教材 + 高保真浏览器 PDF 导出 | 约 579.3 MiB |
+
+如果需要更高保真的浏览器 PDF，可在构建时显式开启：
+
+```bash
+docker build --build-arg INSTALL_PLAYWRIGHT_BROWSER=1 -t subject-knowledge-integration-agents:playwright .
+```
+
+同时把运行环境变量改为：
+
+```bash
+PDF_RENDERER=playwright
+```
+
+如果你更在意镜像体积和构建成功率，而不是扫描版 PDF OCR，可构建轻量无 OCR 变体：
+
+```bash
+docker build --build-arg INSTALL_OCR=0 -t subject-knowledge-integration-agents:light .
+```
+
+这种变体建议同时在运行环境里关闭 OCR：
+
+```bash
+OCR_ENABLED=0
+```
+
+## 部署模式与链接要求
+
+- **本地开发地址**：`http://localhost:5173` 和 `http://localhost:8000`
+- **本地 Docker 地址**：`http://localhost:8000`
+- **公网部署地址**：应部署到魔搭创空间或其他可公开访问的容器平台，并通过浏览器直接打开
+
+需要明确区分这三种地址：
+
+- `localhost` 只代表你的当前机器，不能作为比赛提交的“在线部署链接”
+- 本地 Docker 停止后，只会让你本机的 `localhost` 失效，不会影响已经运行的公网实例
+- 公网实例停止后，别人无法再通过链接访问；本地运行不能替代“在线部署链接”要求
+
+本项目的完整能力依赖 FastAPI、SQLite、上传文件、OCR、RAG 索引和 PDF 导出，因此 **GitHub Pages 不能部署完整应用**。GitHub Pages 最多只能承载静态说明页或演示页，不能替代容器化后端。
 
 ## 魔搭创空间
 
@@ -167,7 +244,7 @@ pip install -r requirements.txt
 
 Docker 创空间要求应用监听 `0.0.0.0:7860`，当前 `Dockerfile` 已按该端口启动。若需要运行态数据跨重启保留，建议在魔搭环境变量中把 `DATABASE_URL`、`UPLOAD_DIR`、`INDEX_DIR` 和 `GENERATED_DIR` 指向 `/mnt/workspace` 下的目录。
 
-如果魔搭运行环境不允许安装 OCR 或 Chromium 依赖，第一轮验收可先保证文本型 PDF/MD/TXT、图谱、RAG 和 Markdown 报告链路可用；PDF 导出和扫描版 OCR 再根据平台日志补依赖。
+如果魔搭运行环境不允许安装 Chromium 依赖，默认轻量镜像会直接回退到 `reportlab` PDF 导出，不会阻塞主链路；若后续需要高保真浏览器 PDF，再单独启用 Playwright 浏览器层。
 
 ## 测试与 Benchmark
 

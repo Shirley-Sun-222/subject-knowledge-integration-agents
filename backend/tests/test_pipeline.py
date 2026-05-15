@@ -5,7 +5,6 @@ import unittest
 from pathlib import Path
 
 import pytest
-
 from backend.app.agents.compression import CompressionPlannerAgent
 from backend.app.agents.extraction import KnowledgeExtractionAgent
 from backend.app.config import settings
@@ -121,6 +120,24 @@ def test_extraction_fallback_metrics_include_llm_errors(monkeypatch: pytest.Monk
     assert metrics["fallback"] is True
     assert metrics["elapsed_ms"] == 12
     assert "schema_error" in metrics
+
+
+def test_parse_pdf_reports_progress_and_detects_pdf_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fitz = pytest.importorskip("fitz")
+    path = tmp_path / "digital.pdf"
+    document = fitz.open()
+    page = document.new_page()
+    page.insert_text((72, 72), "第 1 章 绪论\n知识图谱用于表示概念关系。")
+    document.save(path)
+    document.close()
+
+    progress_events: list[tuple[str, int, int]] = []
+    parsed = parse_textbook(path, path.name, progress=lambda phase, current, total: progress_events.append((phase, current, total)))
+
+    assert parsed["total_pages"] == 1
+    assert parsed["chapters"]
+    assert any(event[0] == "detecting_pdf_mode" for event in progress_events)
+    assert any(event[0] == "reading_pdf_pages" for event in progress_events)
 
 
 if __name__ == "__main__":

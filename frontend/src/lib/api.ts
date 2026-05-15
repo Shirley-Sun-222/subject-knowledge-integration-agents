@@ -13,6 +13,26 @@ export type Textbook = {
   graph_edge_count?: number;
 };
 
+export type TaskSummary = {
+  id: string;
+  task_type: "parse_textbook" | "build_graph" | "run_integration" | "build_rag_index" | "build_report_pdf";
+  resource_type: "textbook" | "system" | "report";
+  resource_id: string;
+  status: "queued" | "running" | "succeeded" | "failed";
+  phase: string;
+};
+
+export type TaskDetail = TaskSummary & {
+  progress_current: number;
+  progress_total: number;
+  truncated: boolean;
+  error_summary?: string | null;
+  result_ref?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+};
+
 export type Chapter = {
   id: string;
   textbook_id: string;
@@ -105,6 +125,13 @@ export type RagResponse = {
   token_estimate: number;
 };
 
+export type UploadResponse = {
+  uploads: Array<{
+    textbook: Textbook;
+    task: TaskSummary;
+  }>;
+};
+
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, options);
   if (!response.ok) {
@@ -115,7 +142,7 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  async upload(files: FileList): Promise<{ textbooks: Textbook[] }> {
+  async upload(files: FileList): Promise<UploadResponse> {
     const form = new FormData();
     Array.from(files).forEach((file) => form.append("files", file));
     return request("/api/textbooks/upload", { method: "POST", body: form });
@@ -123,7 +150,7 @@ export const api = {
   async textbooks(): Promise<{ textbooks: Textbook[] }> {
     return request("/api/textbooks");
   },
-  async buildGraph(textbookId: string, maxChapters = 3): Promise<GraphResult> {
+  async buildGraph(textbookId: string, maxChapters = 3): Promise<{ task: TaskSummary }> {
     return request("/api/graphs/build", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -133,13 +160,13 @@ export const api = {
   async graph(textbookId: string): Promise<GraphResult> {
     return request(`/api/graphs/${textbookId}`);
   },
-  async runIntegration(): Promise<IntegrationResult> {
+  async runIntegration(): Promise<{ task: TaskSummary }> {
     return request("/api/integration/run", { method: "POST" });
   },
   async integration(): Promise<IntegrationResult> {
     return request("/api/integration");
   },
-  async indexRag(): Promise<{ indexed_textbooks: number; chunk_count: number }> {
+  async indexRag(): Promise<{ task: TaskSummary }> {
     return request("/api/rag/index", { method: "POST" });
   },
   async ragStatus(): Promise<{ indexed_textbooks: number; chunk_count: number }> {
@@ -161,5 +188,21 @@ export const api = {
   },
   async report(): Promise<{ markdown: string }> {
     return request("/api/report/integration");
+  },
+  async buildReportPdf(): Promise<{ task: TaskSummary }> {
+    return request("/api/report/pdf/build", { method: "POST" });
+  },
+  async tasks(filters: Partial<Pick<TaskDetail, "status" | "task_type" | "resource_type" | "resource_id">> = {}): Promise<{ tasks: TaskDetail[] }> {
+    const query = new URLSearchParams();
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value) {
+        query.set(key, value);
+      }
+    });
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return request(`/api/tasks${suffix}`);
+  },
+  async task(taskId: string): Promise<{ task: TaskDetail }> {
+    return request(`/api/tasks/${taskId}`);
   }
 };

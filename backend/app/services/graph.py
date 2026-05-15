@@ -1,74 +1,129 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections.abc import Callable
+
 from ..agents.extraction import KnowledgeExtractionAgent
 from ..config import settings
-from ..db import connect, json_dumps, json_loads, row_to_dict
+from ..runtime.store import state_store
+from ..runtime.tasks import TaskContext, task_runner
+
+GraphProgress = Callable[[int, int, bool], None]
 
 
-def build_graph(textbook_id: str, max_chapters: int | None = None) -> dict:
-    agent = KnowledgeExtractionAgent()
+def enqueue_build_graph(textbook_id: str, max_chapters: int | None = None) -> tuple[dict, bool]:
+    chapter_limit = _resolved_chapter_limit_for_textbook(textbook_id, max_chapters)
+    cache_key = state_store.graph_cache_key(textbook_id, chapter_limit)
+    cache = state_store.get_graph_cache(textbook_id)
+    if cache is not None and cache["cache_key"] == cache_key and cache["chapter_limit"] == chapter_limit:
+        task = state_store.create_finished_task(
+            "build_graph",
+            "textbook",
+            textbook_id,
+            phase="cache_hit",
+            result_ref=textbook_id,
+            truncated=chapter_limit < len(state_store.get_chapters(textbook_id)),
+        )
+        return task, False
+    return task_runner.enqueue(
+        "build_graph",
+        "textbook",
+        textbook_id,
+        lambda context: _build_graph_task(context, textbook_id, max_chapters),
+    )
+
+
+def _build_graph_task(context: TaskContext, textbook_id: str, max_chapters: int | None = None) -> dict:
+    chapters = state_store.get_chapters(textbook_id)
+    original_chapter_count = len(chapters)
+    chapter_limit = _resolve_chapter_limit(max_chapters)
+    if chapter_limit > 0:
+        chapters = chapters[:chapter_limit]
+    processed_total = len(chapters)
+    context.start("extracting_graph", progress_total=original_chapter_count)
+    graph = build_graph(
+        textbook_id,
+        max_chapters=max_chapters,
+        progress=lambda current, total, truncated: context.progress(
+            phase="extracting_graph" if current < processed_total else "writing_graph",
+            progress_current=current,
+            progress_total=total,
+            truncated=truncated,
+        ),
+    )
+    return {
+        "result_ref": textbook_id,
+        "truncated": bool(graph.get("metrics", {}).get("truncated", len(chapters) < original_chapter_count)),
+        "phase": "completed",
+    }
+
+
+def build_graph(textbook_id: str, max_chapters: int | None = None, progress: GraphProgress | None = None) -> dict:
     total_tokens = 0
     total_elapsed = 0
     fallback_chapters = 0
     llm_errors: list[str] = []
-    with connect() as conn:
-        chapters = [row_to_dict(row) for row in conn.execute("SELECT * FROM chapters WHERE textbook_id = ? ORDER BY position", (textbook_id,))]
+    chapters = state_store.get_chapters(textbook_id)
     original_chapter_count = len(chapters)
     chapter_limit = _resolve_chapter_limit(max_chapters)
     if chapter_limit > 0:
         chapters = chapters[:chapter_limit]
 
     extracted: list[tuple[list, list]] = []
-    for chapter in chapters:
-        nodes, edges, metrics = agent.extract(chapter, textbook_id)
-        total_tokens += int(metrics.get("token_estimate", 0))
-        total_elapsed += int(metrics.get("elapsed_ms", 0))
-        if metrics.get("fallback"):
-            fallback_chapters += 1
-        error = metrics.get("error") or metrics.get("schema_error")
-        if error:
-            llm_errors.append(str(error)[:200])
-        extracted.append((nodes, edges))
+    truncated = len(chapters) < original_chapter_count
+    workers = _resolve_extract_workers(len(chapters))
+    if workers == 1:
+        for index, chapter in enumerate(chapters, start=1):
+            nodes, edges, metrics = _extract_chapter(chapter, textbook_id)
+            total_tokens += int(metrics.get("token_estimate", 0))
+            total_elapsed += int(metrics.get("elapsed_ms", 0))
+            if metrics.get("fallback"):
+                fallback_chapters += 1
+            error = metrics.get("error") or metrics.get("schema_error")
+            if error:
+                llm_errors.append(str(error)[:200])
+            extracted.append((nodes, edges))
+            if progress is not None:
+                progress(index, original_chapter_count, truncated)
+    else:
+        by_position: dict[int, tuple[list, list]] = {}
+        completed = 0
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="graph-extract") as executor:
+            futures = {
+                executor.submit(_extract_chapter, chapter, textbook_id): chapter["position"]
+                for chapter in chapters
+            }
+            for future in as_completed(futures):
+                nodes, edges, metrics = future.result()
+                total_tokens += int(metrics.get("token_estimate", 0))
+                total_elapsed += int(metrics.get("elapsed_ms", 0))
+                if metrics.get("fallback"):
+                    fallback_chapters += 1
+                error = metrics.get("error") or metrics.get("schema_error")
+                if error:
+                    llm_errors.append(str(error)[:200])
+                by_position[futures[future]] = (nodes, edges)
+                completed += 1
+                if progress is not None:
+                    progress(completed, original_chapter_count, truncated)
+        extracted = [by_position[position] for position in sorted(by_position)]
 
-    with connect() as conn:
-        conn.execute("DELETE FROM knowledge_edges WHERE textbook_id = ?", (textbook_id,))
-        conn.execute("DELETE FROM knowledge_nodes WHERE textbook_id = ?", (textbook_id,))
-        for nodes, edges in extracted:
-            for node in nodes:
-                conn.execute(
-                    """
-                    INSERT INTO knowledge_nodes
-                    (id, textbook_id, chapter_id, name, definition, category, page, source_excerpt, frequency, metadata)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        node.id,
-                        node.textbook_id,
-                        node.chapter_id,
-                        node.name,
-                        node.definition,
-                        node.category,
-                        node.page,
-                        node.source_excerpt,
-                        node.frequency,
-                        json_dumps(node.metadata),
-                    ),
-                )
-            for edge in edges:
-                conn.execute(
-                    """
-                    INSERT INTO knowledge_edges (id, textbook_id, source, target, relation_type, description)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (edge.id, edge.textbook_id, edge.source, edge.target, edge.relation_type, edge.description),
-                )
-    graph = get_graph(textbook_id)
+    flat_nodes = [node for nodes, _ in extracted for node in nodes]
+    flat_edges = [edge for _, edges in extracted for edge in edges]
+    state_store.replace_graph_with_cache(
+        textbook_id,
+        flat_nodes,
+        flat_edges,
+        cache_key=state_store.graph_cache_key(textbook_id, len(chapters)),
+        chapter_limit=len(chapters),
+    )
+    graph = state_store.get_graph(textbook_id)
     graph["metrics"] = {
         "token_estimate": total_tokens,
         "elapsed_ms": total_elapsed,
         "processed_chapters": len(chapters),
         "total_chapters": original_chapter_count,
-        "truncated": len(chapters) < original_chapter_count,
+        "truncated": truncated,
         "fallback_chapters": fallback_chapters,
         "llm_chapters": len(chapters) - fallback_chapters,
         "llm_configured": bool(settings.llm_base_url and settings.llm_api_key),
@@ -86,55 +141,29 @@ def _resolve_chapter_limit(max_chapters: int | None = None) -> int:
     return min(configured, max_chapters)
 
 
+def _resolved_chapter_limit_for_textbook(textbook_id: str, max_chapters: int | None = None) -> int:
+    chapters = state_store.get_chapters(textbook_id)
+    limit = _resolve_chapter_limit(max_chapters)
+    if limit <= 0:
+        return len(chapters)
+    return min(limit, len(chapters))
+
+
+def _resolve_extract_workers(chapter_count: int) -> int:
+    configured = max(settings.graph_extract_workers, 1)
+    if chapter_count <= 1:
+        return 1
+    return min(configured, chapter_count)
+
+
+def _extract_chapter(chapter: dict, textbook_id: str):
+    agent = KnowledgeExtractionAgent()
+    return agent.extract(chapter, textbook_id)
+
+
 def get_graph(textbook_id: str) -> dict:
-    with connect() as conn:
-        nodes = [
-            row_to_dict(row)
-            for row in conn.execute(
-                """
-                SELECT n.*,
-                       t.title AS textbook_title,
-                       c.title AS chapter_title,
-                       c.position AS chapter_position,
-                       c.page_start AS page_start,
-                       c.page_end AS page_end
-                FROM knowledge_nodes n
-                JOIN textbooks t ON t.id = n.textbook_id
-                JOIN chapters c ON c.id = n.chapter_id
-                WHERE n.textbook_id = ?
-                ORDER BY c.position, n.page, n.name
-                """,
-                (textbook_id,),
-            )
-        ]
-        for node in nodes:
-            node["metadata"] = json_loads(node.get("metadata"), {})
-        edges = [row_to_dict(row) for row in conn.execute("SELECT * FROM knowledge_edges WHERE textbook_id = ?", (textbook_id,))]
-        textbook = conn.execute("SELECT id, title, filename FROM textbooks WHERE id = ?", (textbook_id,)).fetchone()
-        return {
-            "textbook": row_to_dict(textbook) if textbook else None,
-            "nodes": nodes,
-            "edges": edges,
-        }
+    return state_store.get_graph(textbook_id)
 
 
 def get_all_graph_nodes() -> list[dict]:
-    with connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT n.*,
-                   t.title AS textbook_title,
-                   c.title AS chapter_title,
-                   c.position AS chapter_position,
-                   c.page_start AS page_start,
-                   c.page_end AS page_end
-            FROM knowledge_nodes n
-            JOIN textbooks t ON t.id = n.textbook_id
-            JOIN chapters c ON c.id = n.chapter_id
-            ORDER BY t.created_at, c.position, n.page, n.name
-            """
-        )
-        nodes = [row_to_dict(row) for row in rows]
-        for node in nodes:
-            node["metadata"] = json_loads(node.get("metadata"), {})
-        return nodes
+    return state_store.get_all_graph_nodes()

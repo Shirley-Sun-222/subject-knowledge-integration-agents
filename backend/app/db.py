@@ -135,5 +135,47 @@ def init_db() -> None:
                 metadata TEXT,
                 created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS task_runs (
+                id TEXT PRIMARY KEY,
+                task_type TEXT NOT NULL,
+                resource_type TEXT NOT NULL,
+                resource_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                phase TEXT NOT NULL,
+                progress_current INTEGER NOT NULL DEFAULT 0,
+                progress_total INTEGER NOT NULL DEFAULT 0,
+                truncated INTEGER NOT NULL DEFAULT 0,
+                error_summary TEXT,
+                result_ref TEXT,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                finished_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_task_runs_status ON task_runs(status);
+            CREATE INDEX IF NOT EXISTS idx_task_runs_lookup ON task_runs(task_type, resource_type, resource_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS graph_cache_entries (
+                textbook_id TEXT PRIMARY KEY,
+                cache_key TEXT NOT NULL,
+                chapter_limit INTEGER NOT NULL,
+                node_count INTEGER NOT NULL,
+                edge_count INTEGER NOT NULL,
+                built_at TEXT NOT NULL,
+                FOREIGN KEY(textbook_id) REFERENCES textbooks(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS rag_index_entries (
+                chapter_id TEXT PRIMARY KEY,
+                textbook_id TEXT NOT NULL,
+                chunk_signature TEXT NOT NULL,
+                chunk_count INTEGER NOT NULL,
+                built_at TEXT NOT NULL,
+                FOREIGN KEY(textbook_id) REFERENCES textbooks(id) ON DELETE CASCADE,
+                FOREIGN KEY(chapter_id) REFERENCES chapters(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_rag_index_entries_textbook ON rag_index_entries(textbook_id);
             """
         )
