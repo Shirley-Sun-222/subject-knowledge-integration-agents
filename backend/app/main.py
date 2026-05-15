@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import logging
 
 from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,7 +9,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import settings
-from .db import init_db
+from .db import backup_corrupt_database, init_db, is_recoverable_sqlite_error
+from .runtime.files import runtime_files
 from .runtime.session import ensure_workspace_id
 from .runtime.store import state_store
 from .runtime.tasks import task_runner
@@ -18,6 +20,7 @@ from .services.llm import llm_client
 
 
 app = FastAPI(title="学科知识整合智能体", version="0.1.0")
+logger = logging.getLogger(__name__)
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,10 +33,15 @@ app.add_middleware(
 
 @app.on_event("startup")
 def startup() -> None:
-    init_db()
-    state_store.clear_legacy_global_state()
-    task_runner.startup()
-    state_store.purge_expired_workspaces()
+    try:
+        _startup_runtime()
+    except Exception as exc:
+        if not is_recoverable_sqlite_error(exc):
+            raise
+        backup = backup_corrupt_database()
+        runtime_files.reset_runtime_storage()
+        logger.warning("Recovered from corrupt runtime database; backup=%s", backup)
+        _startup_runtime()
 
 
 @app.get("/api/health")
@@ -225,6 +233,13 @@ def _workspace(request: Request, response: Response) -> str:
     workspace_id = ensure_workspace_id(request, response)
     state_store.ensure_workspace(workspace_id)
     return workspace_id
+
+
+def _startup_runtime() -> None:
+    init_db()
+    state_store.clear_legacy_global_state()
+    task_runner.startup()
+    state_store.purge_expired_workspaces()
 
 
 def _task_summary(task: dict) -> dict:

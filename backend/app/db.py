@@ -209,6 +209,20 @@ def init_db() -> None:
         _ensure_index_metadata_tables(conn)
 
 
+def is_recoverable_sqlite_error(error: Exception) -> bool:
+    message = str(error).lower()
+    return "database disk image is malformed" in message or "disk i/o error" in message
+
+
+def backup_corrupt_database() -> Path | None:
+    path = settings.database_path
+    if not path.exists():
+        return None
+    backup = path.with_name(f"{path.name}.corrupt-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}.bak")
+    path.replace(backup)
+    return backup
+
+
 def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
     return any(row["name"] == column for row in rows)

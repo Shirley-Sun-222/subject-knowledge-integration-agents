@@ -64,5 +64,11 @@ class RuntimeFiles:
             if child.is_file():
                 child.unlink()
 
+    def reset_runtime_storage(self) -> None:
+        for path in [settings.upload_dir, settings.index_dir, settings.generated_dir]:
+            if path.exists():
+                shutil.rmtree(path, ignore_errors=True)
+            path.mkdir(parents=True, exist_ok=True)
+
 
 runtime_files = RuntimeFiles()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import sqlite3
 import time
 from pathlib import Path
 
@@ -183,6 +184,28 @@ def test_session_llm_config_overrides_global_llm(tmp_path: Path) -> None:
         object.__setattr__(settings, "llm_api_key", original_global_key)
         object.__setattr__(settings, "llm_model", original_global_model)
         _restore_runtime_paths(originals)
+
+
+def test_startup_recovers_from_malformed_sqlite(monkeypatch) -> None:
+    calls = {"count": 0, "reset": 0, "backup": 0}
+    original = main._startup_runtime
+    try:
+        def flaky_startup():
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise sqlite3.DatabaseError("database disk image is malformed")
+
+        monkeypatch.setattr(main, "_startup_runtime", flaky_startup)
+        monkeypatch.setattr(main, "backup_corrupt_database", lambda: calls.__setitem__("backup", calls["backup"] + 1) or Path("/tmp/fake.bak"))
+        monkeypatch.setattr(main.runtime_files, "reset_runtime_storage", lambda: calls.__setitem__("reset", calls["reset"] + 1))
+
+        main.startup()
+
+        assert calls["count"] == 2
+        assert calls["backup"] == 1
+        assert calls["reset"] == 1
+    finally:
+        monkeypatch.setattr(main, "_startup_runtime", original)
 
 
 def test_build_graph_api_reuses_active_task_for_same_textbook(tmp_path: Path, monkeypatch) -> None:
