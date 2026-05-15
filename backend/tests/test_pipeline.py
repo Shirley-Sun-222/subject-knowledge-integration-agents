@@ -86,7 +86,7 @@ def test_llm_client_returns_error_result_when_provider_fails(monkeypatch: pytest
     original_llm_api_key = settings.llm_api_key
     object.__setattr__(settings, "llm_base_url", "https://llm.example.test/v1")
     object.__setattr__(settings, "llm_api_key", "test-key")
-    monkeypatch.setattr(llm_client, "_post", lambda payload: (_ for _ in ()).throw(RuntimeError("provider unavailable")))
+    monkeypatch.setattr(llm_client, "_post", lambda payload, config: (_ for _ in ()).throw(RuntimeError("provider unavailable")))
 
     try:
         result = llm_client.complete_json("system", "user")
@@ -108,7 +108,7 @@ def test_extraction_fallback_metrics_include_llm_errors(monkeypatch: pytest.Monk
         "content": "排序算法包括快速排序和归并排序。",
     }
 
-    def fake_complete_json(system: str, user: str) -> dict:
+    def fake_complete_json(system: str, user: str, workspace_id: str = "global") -> dict:
         return LlmResult({"data": {"nodes": [{}], "edges": []}, "elapsed_ms": 12, "token_estimate": 34})
 
     monkeypatch.setattr(llm_client, "complete_json", fake_complete_json)

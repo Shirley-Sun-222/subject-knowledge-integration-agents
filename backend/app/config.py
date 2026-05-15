@@ -41,6 +41,7 @@ class Settings:
     graph_max_chapters: int = int(os.getenv("GRAPH_MAX_CHAPTERS", "30"))
     graph_extract_workers: int = int(os.getenv("GRAPH_EXTRACT_WORKERS", "2"))
     pdf_renderer: str = os.getenv("PDF_RENDERER", "playwright")
+    session_workspace_ttl_seconds: int = int(os.getenv("SESSION_WORKSPACE_TTL_SECONDS", str(24 * 60 * 60)))
 
     @property
     def database_path(self) -> Path:

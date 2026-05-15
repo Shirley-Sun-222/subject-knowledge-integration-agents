@@ -1,7 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { Download, FileText, GitMerge, MessageSquare, Network, Play, Search, UploadCloud } from "lucide-react";
-import { api, type IntegrationResult, type KnowledgeEdge, type KnowledgeNode, type RagResponse, type TaskDetail, type Textbook } from "./lib/api";
+import { FileText, GitMerge, MessageSquare, Network, Play, Search, Trash2, UploadCloud } from "lucide-react";
+import { api, type IntegrationResult, type KnowledgeEdge, type KnowledgeNode, type RagResponse, type SessionLlmConfigStatus, type SessionWorkspaceStatus, type TaskDetail, type Textbook } from "./lib/api";
 import { taskLabel, useTaskWorkflow } from "./lib/workflow";
 import type { GraphLayoutMode } from "./components/GraphCanvas";
 import "./styles.css";
@@ -12,6 +12,7 @@ const GraphCanvas = React.lazy(() =>
 
 type Tab = "integration" | "rag" | "dialogue" | "report";
 type GraphMode = "empty" | "single" | "integration";
+type GraphBuildMode = "preview" | "full";
 
 type GraphView = {
   mode: GraphMode;
@@ -44,6 +45,12 @@ function App() {
   const [dialogueMessage, setDialogueMessage] = React.useState("");
   const [dialogueReply, setDialogueReply] = React.useState("");
   const [report, setReport] = React.useState("");
+  const [graphBuildMode, setGraphBuildMode] = React.useState<GraphBuildMode>("preview");
+  const [llmStatus, setLlmStatus] = React.useState<SessionLlmConfigStatus>({ configured: false, source: "none" });
+  const [workspaceStatus, setWorkspaceStatus] = React.useState<SessionWorkspaceStatus | null>(null);
+  const [llmBaseUrl, setLlmBaseUrl] = React.useState("");
+  const [llmModel, setLlmModel] = React.useState("");
+  const [llmApiKey, setLlmApiKey] = React.useState("");
   const deferredQuery = React.useDeferredValue(query);
 
   const run = React.useCallback(async <T,>(label: string, action: () => Promise<T>): Promise<T | undefined> => {
@@ -63,9 +70,17 @@ function App() {
     const textbookResult = await api.textbooks();
     const ragResult = await api.ragStatus();
     const integrationResult = await api.integration();
+    const llmResult = await api.sessionLlmStatus();
+    const workspaceResult = await api.sessionWorkspace();
     setTextbooks(textbookResult.textbooks);
     setRagStatus(ragResult);
     setIntegration(integrationResult);
+    setLlmStatus(llmResult.status);
+    setWorkspaceStatus(workspaceResult.workspace);
+    if (llmResult.status.configured) {
+      setLlmBaseUrl(llmResult.status.base_url || "");
+      setLlmModel(llmResult.status.model || "");
+    }
     if (options.loadIntegrationGraph && integrationResult.nodes.length) {
       setGraphNodes(integrationResult.nodes);
       setGraphEdges(integrationResult.edges);
@@ -74,7 +89,8 @@ function App() {
     return {
       textbooks: textbookResult.textbooks,
       ragStatus: ragResult,
-      integration: integrationResult
+      integration: integrationResult,
+      llmStatus: llmResult.status
     };
   }, []);
 
@@ -163,13 +179,30 @@ function App() {
   }
 
   async function buildGraph(textbookId: string) {
-    const result = await run("提交图谱任务", () => api.buildGraph(textbookId));
+    const result = await run("提交图谱任务", () =>
+      api.buildGraph(textbookId, graphBuildMode === "full" ? { mode: "full" } : { mode: "preview", maxChapters: 3 })
+    );
     if (result) {
       trackTask(result.task);
       if (result.task.status !== "queued" && result.task.status !== "running") {
         await settleImmediateTask(result.task.id);
       }
     }
+  }
+
+  async function removeTextbook(textbookId: string) {
+    await run("删除教材", async () => {
+      await api.deleteTextbook(textbookId);
+      if (selectedNode?.textbook_id === textbookId) {
+        setSelectedNode(null);
+      }
+      if (graphView.mode === "single" && graphNodes.some((node) => node.textbook_id === textbookId)) {
+        setGraphNodes([]);
+        setGraphEdges([]);
+        setGraphView({ mode: "empty", title: "尚未加载图谱" });
+      }
+      await refresh({ loadIntegrationGraph: graphView.mode === "integration" });
+    });
   }
 
   async function integrate() {
@@ -245,6 +278,31 @@ function App() {
     }
   }
 
+  async function saveSessionLlmConfig() {
+    if (!llmBaseUrl.trim() || !llmModel.trim() || !llmApiKey.trim()) {
+      setError("请填写 Base URL、模型名和 API Key。");
+      return;
+    }
+    await run("保存会话模型配置", async () => {
+      await api.setSessionLlmConfig({
+        base_url: llmBaseUrl.trim(),
+        model: llmModel.trim(),
+        api_key: llmApiKey.trim()
+      });
+      setLlmApiKey("");
+      const status = await api.sessionLlmStatus();
+      setLlmStatus(status.status);
+    });
+  }
+
+  async function clearSessionLlmConfig() {
+    await run("清空会话模型配置", async () => {
+      await api.clearSessionLlmConfig();
+      const status = await api.sessionLlmStatus();
+      setLlmStatus(status.status);
+    });
+  }
+
   const visibleNodes = React.useMemo(() => {
     if (!deferredQuery.trim()) {
       return graphNodes.slice(0, 180);
@@ -277,23 +335,41 @@ function App() {
 
         <section className="list-panel">
           <h2>教材管理</h2>
+          {workspaceStatus && (
+            <p className="muted">当前会话工作区数据默认保留 {formatTtl(workspaceStatus.ttl_seconds)}，超时后自动清理。</p>
+          )}
+          <div className="segmented-control" aria-label="图谱构建模式">
+            <button className={graphBuildMode === "preview" ? "active" : ""} onClick={() => setGraphBuildMode("preview")} aria-pressed={graphBuildMode === "preview"}>
+              预览图谱
+            </button>
+            <button className={graphBuildMode === "full" ? "active" : ""} onClick={() => setGraphBuildMode("full")} aria-pressed={graphBuildMode === "full"}>
+              全量图谱
+            </button>
+          </div>
+          <p className="muted">当前模式：{graphBuildMode === "preview" ? "优先快速预览前几章" : "处理更多章节，耗时更长"}</p>
           {textbooks.length === 0 && <p className="muted">尚未上传教材。</p>}
           {textbooks.map((book) => (
             <article key={book.id} className="textbook-row">
               <div>
                 <strong>{book.title}</strong>
                 <span>{book.format.toUpperCase()} · {Math.round(book.size_bytes / 1024)} KB · {book.total_chars} 字</span>
+                <span>章节 {book.chapter_count || 0}</span>
                 <span>图谱 {book.graph_node_count || 0} 节点 / {book.graph_edge_count || 0} 边</span>
                 <span className={`status ${book.status}`}>{book.status}</span>
                 {book.error && <span className="row-error">{book.error}</span>}
               </div>
-              <button
-                onClick={() => buildGraph(book.id)}
-                disabled={book.status !== "completed" || !!activeTaskFor("build_graph", book.id) || !!activeTaskFor("parse_textbook", book.id)}
-                aria-label="构建图谱"
-              >
-                <Play size={16} />
-              </button>
+              <div className="row-actions">
+                <button
+                  onClick={() => buildGraph(book.id)}
+                  disabled={book.status !== "completed" || !!activeTaskFor("build_graph", book.id) || !!activeTaskFor("parse_textbook", book.id)}
+                  aria-label="构建图谱"
+                >
+                  <Play size={16} />
+                </button>
+                <button onClick={() => removeTextbook(book.id)} aria-label="删除教材">
+                  <Trash2 size={16} />
+                </button>
+              </div>
             </article>
           ))}
         </section>
@@ -359,6 +435,23 @@ function App() {
       </section>
 
       <aside className="right-panel">
+        <section className="tab-panel">
+          <h2>会话模型配置</h2>
+          <p className="muted">
+            当前来源：{llmStatus.source === "session" ? "当前会话自带模型" : llmStatus.source === "global" ? "部署者全局模型" : "未配置模型"}
+          </p>
+          {llmStatus.configured && (
+            <p className="muted">{llmStatus.base_url} · {llmStatus.model}</p>
+          )}
+          <textarea value={llmBaseUrl} onChange={(event) => setLlmBaseUrl(event.target.value)} placeholder="LLM Base URL" />
+          <textarea value={llmModel} onChange={(event) => setLlmModel(event.target.value)} placeholder="模型名，例如 deepseek-v4-pro" />
+          <textarea value={llmApiKey} onChange={(event) => setLlmApiKey(event.target.value)} placeholder="本会话 API Key（不会回显已有值）" />
+          <div className="button-row">
+            <button onClick={saveSessionLlmConfig} disabled={!!busy}>保存会话模型</button>
+            <button onClick={clearSessionLlmConfig} disabled={!!busy}>清空会话模型</button>
+          </div>
+        </section>
+
         <nav className="tabs">
           {(["integration", "rag", "dialogue", "report"] as Tab[]).map((tab) => (
             <button key={tab} className={activeTab === tab ? "active" : ""} onClick={() => setActiveTab(tab)}>
@@ -430,9 +523,8 @@ function App() {
             <h2>整合报告</h2>
             <div className="button-row">
               <button onClick={loadReport} disabled={!!busy}>生成 Markdown</button>
-              <button onClick={buildReportPdf} disabled={!!activeTaskFor("build_report_pdf")}><FileText size={16} />生成 PDF</button>
-              <a className="download-link" href="/api/report/pdf"><Download size={16} />导出 PDF</a>
             </div>
+            <p className="muted">当前标准部署已隐藏低质量 PDF 导出入口，仅保留 Markdown 报告预览。</p>
             <pre className="report-preview">{report || "生成报告后将在这里预览 Markdown。"}</pre>
           </section>
         )}
@@ -473,6 +565,18 @@ function renderTaskProgress(task: TaskDetail) {
     return `${task.progress_current}/${task.progress_total}${task.truncated ? "，已截断" : ""}`;
   }
   return task.status;
+}
+
+function formatTtl(ttlSeconds: number) {
+  const hours = Math.floor(ttlSeconds / 3600);
+  const minutes = Math.floor((ttlSeconds % 3600) / 60);
+  if (hours > 0 && minutes > 0) {
+    return `${hours} 小时 ${minutes} 分钟`;
+  }
+  if (hours > 0) {
+    return `${hours} 小时`;
+  }
+  return `${minutes} 分钟`;
 }
 
 ReactDOM.createRoot(document.getElementById("root")!).render(<App />);

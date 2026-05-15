@@ -49,6 +49,7 @@ def init_db() -> None:
             PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS textbooks (
                 id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL DEFAULT 'global',
                 filename TEXT NOT NULL,
                 title TEXT NOT NULL,
                 format TEXT NOT NULL,
@@ -62,6 +63,7 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS chapters (
                 id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL DEFAULT 'global',
                 textbook_id TEXT NOT NULL,
                 title TEXT NOT NULL,
                 page_start INTEGER NOT NULL,
@@ -74,6 +76,7 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS chunks (
                 id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL DEFAULT 'global',
                 textbook_id TEXT NOT NULL,
                 chapter_id TEXT NOT NULL,
                 chunk_index INTEGER NOT NULL,
@@ -87,6 +90,7 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS knowledge_nodes (
                 id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL DEFAULT 'global',
                 textbook_id TEXT NOT NULL,
                 chapter_id TEXT NOT NULL,
                 name TEXT NOT NULL,
@@ -102,6 +106,7 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS knowledge_edges (
                 id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL DEFAULT 'global',
                 textbook_id TEXT NOT NULL,
                 source TEXT NOT NULL,
                 target TEXT NOT NULL,
@@ -112,6 +117,7 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS integration_decisions (
                 id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL DEFAULT 'global',
                 action TEXT NOT NULL,
                 affected_nodes TEXT NOT NULL,
                 result_node TEXT,
@@ -122,6 +128,7 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS dialogue_messages (
                 id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL DEFAULT 'global',
                 role TEXT NOT NULL,
                 message TEXT NOT NULL,
                 decision_id TEXT,
@@ -130,6 +137,7 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS metrics (
                 id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL DEFAULT 'global',
                 name TEXT NOT NULL,
                 value REAL NOT NULL,
                 metadata TEXT,
@@ -138,6 +146,7 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS task_runs (
                 id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL DEFAULT 'global',
                 task_type TEXT NOT NULL,
                 resource_type TEXT NOT NULL,
                 resource_id TEXT NOT NULL,
@@ -158,6 +167,7 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS graph_cache_entries (
                 textbook_id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL DEFAULT 'global',
                 cache_key TEXT NOT NULL,
                 chapter_limit INTEGER NOT NULL,
                 node_count INTEGER NOT NULL,
@@ -168,6 +178,7 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS rag_index_entries (
                 chapter_id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL DEFAULT 'global',
                 textbook_id TEXT NOT NULL,
                 chunk_signature TEXT NOT NULL,
                 chunk_count INTEGER NOT NULL,
@@ -177,5 +188,51 @@ def init_db() -> None:
             );
 
             CREATE INDEX IF NOT EXISTS idx_rag_index_entries_textbook ON rag_index_entries(textbook_id);
+
+            CREATE TABLE IF NOT EXISTS session_workspaces (
+                id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                last_active_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS workspace_llm_configs (
+                workspace_id TEXT PRIMARY KEY,
+                base_url TEXT NOT NULL,
+                api_key TEXT NOT NULL,
+                model TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(workspace_id) REFERENCES session_workspaces(id) ON DELETE CASCADE
+            );
             """
         )
+        _ensure_workspace_columns(conn)
+        _ensure_index_metadata_tables(conn)
+
+
+def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(row["name"] == column for row in rows)
+
+
+def _ensure_workspace_columns(conn: sqlite3.Connection) -> None:
+    workspace_tables = [
+        "textbooks",
+        "chapters",
+        "chunks",
+        "knowledge_nodes",
+        "knowledge_edges",
+        "integration_decisions",
+        "dialogue_messages",
+        "metrics",
+        "task_runs",
+        "graph_cache_entries",
+        "rag_index_entries",
+    ]
+    for table in workspace_tables:
+        if not _has_column(conn, table, "workspace_id"):
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'global'")
+
+
+def _ensure_index_metadata_tables(conn: sqlite3.Connection) -> None:
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_task_runs_workspace_status ON task_runs(workspace_id, status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_rag_index_entries_workspace_textbook ON rag_index_entries(workspace_id, textbook_id)")

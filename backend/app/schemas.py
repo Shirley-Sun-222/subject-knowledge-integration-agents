@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 
 TaskStatus = Literal["queued", "running", "succeeded", "failed"]
@@ -127,3 +127,21 @@ class TaskDetail(TaskSummary):
     created_at: str
     started_at: str | None = None
     finished_at: str | None = None
+
+
+class SessionLlmConfigRequest(BaseModel):
+    base_url: str
+    api_key: SecretStr
+    model: str
+
+
+class SessionLlmConfigStatus(BaseModel):
+    configured: bool
+    source: Literal["session", "global", "none"]
+    model: str | None = None
+    base_url: str | None = None
+
+
+class SessionWorkspaceStatus(BaseModel):
+    workspace_id: str
+    ttl_seconds: int

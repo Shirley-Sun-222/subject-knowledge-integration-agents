@@ -11,30 +11,32 @@ from ..runtime.tasks import TaskContext, task_runner
 GraphProgress = Callable[[int, int, bool], None]
 
 
-def enqueue_build_graph(textbook_id: str, max_chapters: int | None = None) -> tuple[dict, bool]:
-    chapter_limit = _resolved_chapter_limit_for_textbook(textbook_id, max_chapters)
-    cache_key = state_store.graph_cache_key(textbook_id, chapter_limit)
-    cache = state_store.get_graph_cache(textbook_id)
+def enqueue_build_graph(textbook_id: str, max_chapters: int | None = None, workspace_id: str = "global") -> tuple[dict, bool]:
+    chapter_limit = _resolved_chapter_limit_for_textbook(textbook_id, max_chapters, workspace_id=workspace_id)
+    cache_key = state_store.graph_cache_key(workspace_id, textbook_id, chapter_limit)
+    cache = state_store.get_graph_cache(workspace_id, textbook_id)
     if cache is not None and cache["cache_key"] == cache_key and cache["chapter_limit"] == chapter_limit:
         task = state_store.create_finished_task(
+            workspace_id,
             "build_graph",
             "textbook",
             textbook_id,
             phase="cache_hit",
             result_ref=textbook_id,
-            truncated=chapter_limit < len(state_store.get_chapters(textbook_id)),
+            truncated=chapter_limit < len(state_store.get_chapters(workspace_id, textbook_id)),
         )
         return task, False
     return task_runner.enqueue(
+        workspace_id,
         "build_graph",
         "textbook",
         textbook_id,
-        lambda context: _build_graph_task(context, textbook_id, max_chapters),
+        lambda context: _build_graph_task(context, textbook_id, max_chapters, workspace_id=workspace_id),
     )
 
 
-def _build_graph_task(context: TaskContext, textbook_id: str, max_chapters: int | None = None) -> dict:
-    chapters = state_store.get_chapters(textbook_id)
+def _build_graph_task(context: TaskContext, textbook_id: str, max_chapters: int | None = None, workspace_id: str = "global") -> dict:
+    chapters = state_store.get_chapters(workspace_id, textbook_id)
     original_chapter_count = len(chapters)
     chapter_limit = _resolve_chapter_limit(max_chapters)
     if chapter_limit > 0:
@@ -44,6 +46,7 @@ def _build_graph_task(context: TaskContext, textbook_id: str, max_chapters: int 
     graph = build_graph(
         textbook_id,
         max_chapters=max_chapters,
+        workspace_id=workspace_id,
         progress=lambda current, total, truncated: context.progress(
             phase="extracting_graph" if current < processed_total else "writing_graph",
             progress_current=current,
@@ -58,12 +61,12 @@ def _build_graph_task(context: TaskContext, textbook_id: str, max_chapters: int 
     }
 
 
-def build_graph(textbook_id: str, max_chapters: int | None = None, progress: GraphProgress | None = None) -> dict:
+def build_graph(textbook_id: str, max_chapters: int | None = None, workspace_id: str = "global", progress: GraphProgress | None = None) -> dict:
     total_tokens = 0
     total_elapsed = 0
     fallback_chapters = 0
     llm_errors: list[str] = []
-    chapters = state_store.get_chapters(textbook_id)
+    chapters = state_store.get_chapters(workspace_id, textbook_id)
     original_chapter_count = len(chapters)
     chapter_limit = _resolve_chapter_limit(max_chapters)
     if chapter_limit > 0:
@@ -74,7 +77,7 @@ def build_graph(textbook_id: str, max_chapters: int | None = None, progress: Gra
     workers = _resolve_extract_workers(len(chapters))
     if workers == 1:
         for index, chapter in enumerate(chapters, start=1):
-            nodes, edges, metrics = _extract_chapter(chapter, textbook_id)
+            nodes, edges, metrics = _extract_chapter(chapter, textbook_id, workspace_id=workspace_id)
             total_tokens += int(metrics.get("token_estimate", 0))
             total_elapsed += int(metrics.get("elapsed_ms", 0))
             if metrics.get("fallback"):
@@ -90,7 +93,7 @@ def build_graph(textbook_id: str, max_chapters: int | None = None, progress: Gra
         completed = 0
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="graph-extract") as executor:
             futures = {
-                executor.submit(_extract_chapter, chapter, textbook_id): chapter["position"]
+                executor.submit(_extract_chapter, chapter, textbook_id, workspace_id): chapter["position"]
                 for chapter in chapters
             }
             for future in as_completed(futures):
@@ -111,13 +114,14 @@ def build_graph(textbook_id: str, max_chapters: int | None = None, progress: Gra
     flat_nodes = [node for nodes, _ in extracted for node in nodes]
     flat_edges = [edge for _, edges in extracted for edge in edges]
     state_store.replace_graph_with_cache(
+        workspace_id,
         textbook_id,
         flat_nodes,
         flat_edges,
-        cache_key=state_store.graph_cache_key(textbook_id, len(chapters)),
+        cache_key=state_store.graph_cache_key(workspace_id, textbook_id, len(chapters)),
         chapter_limit=len(chapters),
     )
-    graph = state_store.get_graph(textbook_id)
+    graph = state_store.get_graph(workspace_id, textbook_id)
     graph["metrics"] = {
         "token_estimate": total_tokens,
         "elapsed_ms": total_elapsed,
@@ -141,8 +145,8 @@ def _resolve_chapter_limit(max_chapters: int | None = None) -> int:
     return min(configured, max_chapters)
 
 
-def _resolved_chapter_limit_for_textbook(textbook_id: str, max_chapters: int | None = None) -> int:
-    chapters = state_store.get_chapters(textbook_id)
+def _resolved_chapter_limit_for_textbook(textbook_id: str, max_chapters: int | None = None, workspace_id: str = "global") -> int:
+    chapters = state_store.get_chapters(workspace_id, textbook_id)
     limit = _resolve_chapter_limit(max_chapters)
     if limit <= 0:
         return len(chapters)
@@ -156,14 +160,14 @@ def _resolve_extract_workers(chapter_count: int) -> int:
     return min(configured, chapter_count)
 
 
-def _extract_chapter(chapter: dict, textbook_id: str):
+def _extract_chapter(chapter: dict, textbook_id: str, workspace_id: str = "global"):
     agent = KnowledgeExtractionAgent()
-    return agent.extract(chapter, textbook_id)
+    return agent.extract(chapter, textbook_id, workspace_id=workspace_id)
 
 
-def get_graph(textbook_id: str) -> dict:
-    return state_store.get_graph(textbook_id)
+def get_graph(textbook_id: str, workspace_id: str = "global") -> dict:
+    return state_store.get_graph(workspace_id, textbook_id)
 
 
-def get_all_graph_nodes() -> list[dict]:
-    return state_store.get_all_graph_nodes()
+def get_all_graph_nodes(workspace_id: str = "global") -> list[dict]:
+    return state_store.get_all_graph_nodes(workspace_id)

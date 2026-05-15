@@ -9,6 +9,7 @@ export type Textbook = {
   status: string;
   error?: string | null;
   chapters?: Chapter[];
+  chapter_count?: number;
   graph_node_count?: number;
   graph_edge_count?: number;
 };
@@ -132,6 +133,18 @@ export type UploadResponse = {
   }>;
 };
 
+export type SessionLlmConfigStatus = {
+  configured: boolean;
+  source: "session" | "global" | "none";
+  model?: string | null;
+  base_url?: string | null;
+};
+
+export type SessionWorkspaceStatus = {
+  workspace_id: string;
+  ttl_seconds: number;
+};
+
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, options);
   if (!response.ok) {
@@ -150,11 +163,16 @@ export const api = {
   async textbooks(): Promise<{ textbooks: Textbook[] }> {
     return request("/api/textbooks");
   },
-  async buildGraph(textbookId: string, maxChapters = 3): Promise<{ task: TaskSummary }> {
+  async deleteTextbook(textbookId: string): Promise<{ deleted: string }> {
+    return request(`/api/textbooks/${textbookId}`, { method: "DELETE" });
+  },
+  async buildGraph(textbookId: string, options: { mode?: "preview" | "full"; maxChapters?: number } = {}): Promise<{ task: TaskSummary }> {
+    const mode = options.mode || "preview";
+    const maxChapters = options.maxChapters ?? 3;
     return request("/api/graphs/build", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ textbook_id: textbookId, max_chapters: maxChapters })
+      body: JSON.stringify(mode === "full" ? { textbook_id: textbookId, mode } : { textbook_id: textbookId, mode, max_chapters: maxChapters })
     });
   },
   async graph(textbookId: string): Promise<GraphResult> {
@@ -191,6 +209,22 @@ export const api = {
   },
   async buildReportPdf(): Promise<{ task: TaskSummary }> {
     return request("/api/report/pdf/build", { method: "POST" });
+  },
+  async sessionLlmStatus(): Promise<{ status: SessionLlmConfigStatus }> {
+    return request("/api/session/llm-config/status");
+  },
+  async setSessionLlmConfig(payload: { base_url: string; api_key: string; model: string }): Promise<{ configured: boolean }> {
+    return request("/api/session/llm-config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+  },
+  async clearSessionLlmConfig(): Promise<{ configured: boolean }> {
+    return request("/api/session/llm-config", { method: "DELETE" });
+  },
+  async sessionWorkspace(): Promise<{ workspace: SessionWorkspaceStatus }> {
+    return request("/api/session/workspace");
   },
   async tasks(filters: Partial<Pick<TaskDetail, "status" | "task_type" | "resource_type" | "resource_id">> = {}): Promise<{ tasks: TaskDetail[] }> {
     const query = new URLSearchParams();

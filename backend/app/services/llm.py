@@ -4,9 +4,11 @@ import json
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from typing import Any
 
 from ..config import settings
+from ..runtime.store import state_store
 from ..utils.text import estimate_tokens
 
 
@@ -20,16 +22,44 @@ class LlmResult(dict):
         return int(self.get("token_estimate", 0))
 
 
-class LlmClient:
-    def is_configured(self) -> bool:
-        return bool(settings.llm_base_url and settings.llm_api_key)
+@dataclass(frozen=True)
+class ResolvedLlmConfig:
+    base_url: str
+    api_key: str
+    model: str
+    source: str
 
-    def complete_json(self, system: str, user: str) -> LlmResult:
-        if not self.is_configured():
+
+class LlmClient:
+    def resolve_config(self, workspace_id: str = "global") -> ResolvedLlmConfig | None:
+        if workspace_id != "global":
+            config = state_store.get_workspace_llm_config(workspace_id)
+            if config and config.get("base_url") and config.get("api_key") and config.get("model"):
+                return ResolvedLlmConfig(
+                    base_url=str(config["base_url"]),
+                    api_key=str(config["api_key"]),
+                    model=str(config["model"]),
+                    source="session",
+                )
+        if settings.llm_base_url and settings.llm_api_key:
+            return ResolvedLlmConfig(
+                base_url=settings.llm_base_url,
+                api_key=settings.llm_api_key,
+                model=settings.llm_model,
+                source="global",
+            )
+        return None
+
+    def is_configured(self, workspace_id: str = "global") -> bool:
+        return self.resolve_config(workspace_id) is not None
+
+    def complete_json(self, system: str, user: str, workspace_id: str = "global") -> LlmResult:
+        config = self.resolve_config(workspace_id)
+        if config is None:
             return LlmResult({"data": None, "elapsed_ms": 0, "token_estimate": estimate_tokens([system, user])})
         started = time.perf_counter()
         payload = {
-            "model": settings.llm_model,
+            "model": config.model,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -39,7 +69,7 @@ class LlmClient:
             "response_format": {"type": "json_object"},
         }
         try:
-            data = self._post(payload)
+            data = self._post(payload, config)
             content = data["choices"][0]["message"]["content"]
             return LlmResult(
                 {
@@ -58,12 +88,13 @@ class LlmClient:
                 }
             )
 
-    def complete_text(self, system: str, user: str) -> LlmResult:
-        if not self.is_configured():
+    def complete_text(self, system: str, user: str, workspace_id: str = "global") -> LlmResult:
+        config = self.resolve_config(workspace_id)
+        if config is None:
             return LlmResult({"data": None, "elapsed_ms": 0, "token_estimate": estimate_tokens([system, user])})
         started = time.perf_counter()
         payload = {
-            "model": settings.llm_model,
+            "model": config.model,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -72,7 +103,7 @@ class LlmClient:
             "max_tokens": 900,
         }
         try:
-            data = self._post(payload)
+            data = self._post(payload, config)
             content = data["choices"][0]["message"]["content"]
             return LlmResult(
                 {
@@ -91,14 +122,14 @@ class LlmClient:
                 }
             )
 
-    def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
-        base = settings.llm_base_url.rstrip("/")
+    def _post(self, payload: dict[str, Any], config: ResolvedLlmConfig) -> dict[str, Any]:
+        base = config.base_url.rstrip("/")
         url = f"{base}/chat/completions"
         request = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
             headers={
-                "Authorization": f"Bearer {settings.llm_api_key}",
+                "Authorization": f"Bearer {config.api_key}",
                 "Content-Type": "application/json",
             },
             method="POST",

@@ -9,17 +9,17 @@ from ..runtime.store import state_store
 
 
 class ReportAgent:
-    def render_markdown(self) -> str:
-        data = self.collect_data()
+    def render_markdown(self, workspace_id: str = "global") -> str:
+        data = self.collect_data(workspace_id=workspace_id)
         return _render_markdown(data)
 
-    def generate_markdown(self) -> str:
-        report = self.render_markdown()
-        runtime_files.report_markdown_path().write_text(report, encoding="utf-8")
+    def generate_markdown(self, workspace_id: str = "global") -> str:
+        report = self.render_markdown(workspace_id=workspace_id)
+        runtime_files.report_markdown_path(workspace_id).write_text(report, encoding="utf-8")
         return report
 
-    def collect_data(self) -> dict:
-        data = state_store.collect_report_data()
+    def collect_data(self, workspace_id: str = "global") -> dict:
+        data = state_store.collect_report_data(workspace_id)
         textbooks = data["textbooks"]
         decisions = data["decisions"]
         original_chars = sum(item["total_chars"] for item in textbooks)
@@ -39,9 +39,9 @@ class ReportAgent:
             "metrics": data["metrics"],
         }
 
-    async def generate_pdf(self) -> Path:
-        markdown = self.generate_markdown()
-        output = runtime_files.report_pdf_path()
+    async def generate_pdf(self, workspace_id: str = "global") -> Path:
+        markdown = self.generate_markdown(workspace_id=workspace_id)
+        output = runtime_files.report_pdf_path(workspace_id)
         if settings.pdf_renderer == "playwright":
             try:
                 await _html_to_pdf(_markdown_to_html(markdown), output)

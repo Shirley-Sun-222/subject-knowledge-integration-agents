@@ -20,10 +20,11 @@ def summarize_error(error: Exception) -> str:
 
 @dataclass
 class TaskContext:
+    workspace_id: str
     task_id: str
 
     def start(self, phase: str, progress_total: int = 0) -> None:
-        state_store.mark_task_running(self.task_id, phase=phase, progress_total=progress_total)
+        state_store.mark_task_running(self.workspace_id, self.task_id, phase=phase, progress_total=progress_total)
 
     def progress(
         self,
@@ -34,6 +35,7 @@ class TaskContext:
         truncated: bool | None = None,
     ) -> None:
         state_store.update_task_progress(
+            self.workspace_id,
             self.task_id,
             phase=phase,
             progress_current=progress_current,
@@ -50,24 +52,26 @@ class TaskRunner:
 
     def startup(self) -> None:
         state_store.fail_stale_tasks()
+        state_store.purge_expired_workspaces()
 
     def shutdown(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=True)
 
-    def enqueue(self, task_type: str, resource_type: str, resource_id: str, handler: TaskHandler) -> tuple[dict[str, Any], bool]:
+    def enqueue(self, workspace_id: str, task_type: str, resource_type: str, resource_id: str, handler: TaskHandler) -> tuple[dict[str, Any], bool]:
         with self._lock:
-            task, created = state_store.create_or_get_active_task(task_type, resource_type, resource_id)
+            task, created = state_store.create_or_get_active_task(workspace_id, task_type, resource_type, resource_id)
             if not created:
                 return task, False
-            future = self._executor.submit(self._run_task, task["id"], handler)
+            future = self._executor.submit(self._run_task, workspace_id, task["id"], handler)
             self._futures[task["id"]] = future
             return task, True
 
-    def _run_task(self, task_id: str, handler: TaskHandler) -> None:
-        context = TaskContext(task_id=task_id)
+    def _run_task(self, workspace_id: str, task_id: str, handler: TaskHandler) -> None:
+        context = TaskContext(workspace_id=workspace_id, task_id=task_id)
         try:
             result = handler(context) or {}
             state_store.succeed_task(
+                workspace_id,
                 task_id,
                 result_ref=result.get("result_ref"),
                 truncated=bool(result.get("truncated", False)),
@@ -75,16 +79,16 @@ class TaskRunner:
             )
         except Exception as exc:  # pragma: no cover - defensive logging path
             logger.exception("Background task %s failed", task_id)
-            state_store.fail_task(task_id, summarize_error(exc))
+            state_store.fail_task(workspace_id, task_id, summarize_error(exc))
         finally:
             with self._lock:
                 self._futures.pop(task_id, None)
 
-    def wait_for(self, task_id: str, timeout: float = 10.0) -> dict[str, Any]:
+    def wait_for(self, workspace_id: str, task_id: str, timeout: float = 10.0) -> dict[str, Any]:
         future = self._futures.get(task_id)
         if future is not None:
             future.result(timeout=timeout)
-        return state_store.get_task(task_id)
+        return state_store.get_task(workspace_id, task_id)
 
 
 task_runner = TaskRunner()

@@ -94,7 +94,7 @@ def test_build_graph_limits_processed_chapters_and_reports_truncation(tmp_path: 
     object.__setattr__(settings, "graph_max_chapters", 2)
 
     class FakeExtractionAgent:
-        def extract(self, chapter: dict, textbook_id: str):
+        def extract(self, chapter: dict, textbook_id: str, workspace_id: str = "global"):
             node = KnowledgeNode(
                 id=f"node_{chapter['position']}",
                 textbook_id=textbook_id,

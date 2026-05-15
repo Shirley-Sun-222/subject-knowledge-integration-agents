@@ -115,6 +115,21 @@ GRAPH_EXTRACT_WORKERS=2
 
 部署到云端时，这些路径位于云实例文件系统。若需要跨重启长期保留教材和索引，应为 `data/` 配置持久化卷或对象存储同步。
 
+## 公网会话工作区
+
+公网部署默认不再使用全站共享教材状态。每个浏览器访问者会获得一个匿名 **Session Workspace**：
+
+- 只看到自己当前会话上传的教材、图谱、索引、整合结果和报告
+- 新访问者默认进入空工作区，而不是看到别人留下的教材
+- 工作区内支持按教材选择性删除
+- 工作区状态会在 `SESSION_WORKSPACE_TTL_SECONDS` 指定的 TTL 后自动清理
+
+相关环境变量：
+
+```bash
+SESSION_WORKSPACE_TTL_SECONDS=86400
+```
+
 ## 后台任务接口
 
 为避免公网同步请求超时，所有长写操作都采用“启动任务 + 轮询状态”的接口模式：
@@ -138,6 +153,21 @@ GRAPH_EXTRACT_WORKERS=2
 - PDF 解析任务会显示页级进度，并先快速判断 `digital / mixed / scanned` 模式
 - RAG 建索引支持完整 cache hit 和按章节增量复用，只重建发生变化的章节
 - `GraphCanvas` 与 Cytoscape 已拆为懒加载 chunk，首页主 bundle 明显缩小
+
+## 会话级模型配置
+
+当前会话可以临时配置自己的 OpenAI-compatible LLM：
+
+- `POST /api/session/llm-config`
+- `GET /api/session/llm-config/status`
+- `DELETE /api/session/llm-config`
+
+优先级规则：
+
+- 当前会话自带模型优先
+- 未配置时回退到部署者全局 `LLM_BASE_URL / LLM_API_KEY / LLM_MODEL`
+
+会话配置只在当前工作区中生效，并会随工作区过期一起清理。
 
 ## Docker 运行
 
@@ -245,6 +275,8 @@ pip install -r requirements.txt
 Docker 创空间要求应用监听 `0.0.0.0:7860`，当前 `Dockerfile` 已按该端口启动。若需要运行态数据跨重启保留，建议在魔搭环境变量中把 `DATABASE_URL`、`UPLOAD_DIR`、`INDEX_DIR` 和 `GENERATED_DIR` 指向 `/mnt/workspace` 下的目录。
 
 如果魔搭运行环境不允许安装 Chromium 依赖，默认轻量镜像会直接回退到 `reportlab` PDF 导出，不会阻塞主链路；若后续需要高保真浏览器 PDF，再单独启用 Playwright 浏览器层。
+
+当前标准版公网 UI 默认只保留 Markdown 报告预览，不再暴露低质量 PDF 下载入口。只有 full 变体恢复浏览器渲染后，才建议重新开放 PDF 下载。
 
 ## 测试与 Benchmark
 

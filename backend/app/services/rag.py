@@ -39,10 +39,11 @@ GENERIC_QUERY_TERMS = {
 }
 
 
-def enqueue_build_index() -> tuple[dict, bool]:
-    is_fresh, chapter_count = state_store.rag_index_freshness()
+def enqueue_build_index(workspace_id: str = "global") -> tuple[dict, bool]:
+    is_fresh, chapter_count = state_store.rag_index_freshness(workspace_id)
     if is_fresh:
         task = state_store.create_finished_task(
+            workspace_id,
             "build_rag_index",
             "system",
             "global",
@@ -53,15 +54,16 @@ def enqueue_build_index() -> tuple[dict, bool]:
         )
         return task, False
     return task_runner.enqueue(
+        workspace_id,
         "build_rag_index",
         "system",
         "global",
-        _build_index_task,
+        lambda context: _build_index_task(context, workspace_id=workspace_id),
     )
 
 
-def _build_index_task(context: TaskContext) -> dict:
-    result = build_index(progress=context)
+def _build_index_task(context: TaskContext, workspace_id: str = "global") -> dict:
+    result = build_index(progress=context, workspace_id=workspace_id)
     return {
         "result_ref": "rag-index:global",
         "phase": "completed",
@@ -69,9 +71,9 @@ def _build_index_task(context: TaskContext) -> dict:
     }
 
 
-def build_index(progress: TaskContext | None = None) -> dict:
-    chapters = state_store.list_all_chapters()
-    existing_entries = state_store.list_rag_index_entries()
+def build_index(progress: TaskContext | None = None, workspace_id: str = "global") -> dict:
+    chapters = state_store.list_all_chapters(workspace_id)
+    existing_entries = state_store.list_rag_index_entries(workspace_id)
     active_chapter_ids = {chapter["id"] for chapter in chapters}
     deleted_chapter_ids = [chapter_id for chapter_id in existing_entries if chapter_id not in active_chapter_ids]
     rebuild_targets = []
@@ -135,6 +137,7 @@ def build_index(progress: TaskContext | None = None) -> dict:
             )
     if rebuild_targets or deleted_chapter_ids:
         total = state_store.replace_chunks_for_chapters(
+            workspace_id,
             [chapter["id"] for chapter, _signature in rebuild_targets],
             chunk_rows,
             index_entries,
@@ -142,16 +145,16 @@ def build_index(progress: TaskContext | None = None) -> dict:
         )
         _ = total
     return {
-        "indexed_textbooks": _count_textbooks(),
-        "chunk_count": state_store.count_chunks(),
+        "indexed_textbooks": _count_textbooks(workspace_id),
+        "chunk_count": state_store.count_chunks(workspace_id),
         "reused_chapters": reused_entries,
         "rebuilt_chapters": len(rebuild_targets),
     }
 
 
-def query(question: str, top_k: int = 5) -> RagQueryResponse:
+def query(question: str, top_k: int = 5, workspace_id: str = "global") -> RagQueryResponse:
     started = time.perf_counter()
-    rows = state_store.list_chunks_with_context()
+    rows = state_store.list_chunks_with_context(workspace_id)
     if not rows:
         return RagQueryResponse(answer="当前知识库中未找到相关信息", citations=[], source_chunks=[], elapsed_ms=0, token_estimate=estimate_tokens([question]))
 
@@ -172,7 +175,7 @@ def query(question: str, top_k: int = 5) -> RagQueryResponse:
     if not top or not _has_specific_query_overlap(question, top):
         return RagQueryResponse(answer="当前知识库中未找到相关信息", citations=[], source_chunks=[], elapsed_ms=int((time.perf_counter() - started) * 1000), token_estimate=estimate_tokens([question]))
 
-    answer_result = _answer_with_context(question, top)
+    answer_result = _answer_with_context(question, top, workspace_id=workspace_id)
     citations = [
         Citation(
             textbook=chunk["textbook"],
@@ -186,8 +189,8 @@ def query(question: str, top_k: int = 5) -> RagQueryResponse:
     ]
     elapsed = int((time.perf_counter() - started) * 1000) + answer_result.get("elapsed_ms", 0)
     token_estimate = estimate_tokens([question, *(chunk["text"] for _, chunk in top), answer_result["answer"]])
-    state_store.insert_metric("rag_elapsed_ms", elapsed, {"question": question})
-    state_store.insert_metric("rag_token_estimate", token_estimate, {"question": question})
+    state_store.insert_metric(workspace_id, "rag_elapsed_ms", elapsed, {"question": question})
+    state_store.insert_metric(workspace_id, "rag_token_estimate", token_estimate, {"question": question})
     return RagQueryResponse(
         answer=answer_result["answer"],
         citations=citations,
@@ -197,8 +200,8 @@ def query(question: str, top_k: int = 5) -> RagQueryResponse:
     )
 
 
-def status() -> dict:
-    return {"indexed_textbooks": _count_textbooks(), "chunk_count": state_store.count_chunks()}
+def status(workspace_id: str = "global") -> dict:
+    return {"indexed_textbooks": _count_textbooks(workspace_id), "chunk_count": state_store.count_chunks(workspace_id)}
 
 
 def _vector_scores(question: str, chunks: list[dict]) -> dict[str, float]:
@@ -259,7 +262,7 @@ def _has_specific_query_overlap(question: str, top: list[tuple[float, dict]]) ->
     return False
 
 
-def _answer_with_context(question: str, top: list[tuple[float, dict]]) -> dict:
+def _answer_with_context(question: str, top: list[tuple[float, dict]], workspace_id: str = "global") -> dict:
     context = "\n\n".join(
         f"[{index}] {chunk['textbook']} / {chunk['chapter']} / 第 {chunk['page_start']} 页\n{chunk['text']}"
         for index, (_, chunk) in enumerate(top, start=1)
@@ -267,6 +270,7 @@ def _answer_with_context(question: str, top: list[tuple[float, dict]]) -> dict:
     result = llm_client.complete_text(
         "你是严谨的教材 RAG 问答 Agent。只基于上下文回答，必须引用来源；找不到就回答当前知识库中未找到相关信息。",
         f"问题: {question}\n\n上下文:\n{context}",
+        workspace_id=workspace_id,
     )
     if result.get("data"):
         return {"answer": result["data"], "elapsed_ms": result.elapsed_ms}
@@ -276,8 +280,8 @@ def _answer_with_context(question: str, top: list[tuple[float, dict]]) -> dict:
     return {"answer": answer, "elapsed_ms": 0}
 
 
-def _count_textbooks() -> int:
-    return state_store.count_completed_textbooks()
+def _count_textbooks(workspace_id: str = "global") -> int:
+    return state_store.count_completed_textbooks(workspace_id)
 
 
 def _cosine(a: list[float], b: list[float]) -> float:

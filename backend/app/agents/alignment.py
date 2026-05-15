@@ -14,7 +14,7 @@ class AlignmentAgent:
         "。判断同义概念时要区分上下位概念、应用场景和近义但不等价的术语。"
     )
 
-    def group_nodes(self, nodes: list[dict], threshold: float = 0.78) -> list[list[dict]]:
+    def group_nodes(self, nodes: list[dict], threshold: float = 0.78, workspace_id: str = "global") -> list[list[dict]]:
         if not nodes:
             return []
         vectors = embedding_service.embed([_node_text(node) for node in nodes])
@@ -29,13 +29,13 @@ class AlignmentAgent:
                 if j in visited or nodes[j]["textbook_id"] == node["textbook_id"]:
                     continue
                 score = _cosine_vectors(vectors[i], vectors[j])
-                if score >= threshold and self._llm_equivalent(node, nodes[j], score):
+                if score >= threshold and self._llm_equivalent(node, nodes[j], score, workspace_id=workspace_id):
                     group.append(nodes[j])
                     visited.add(j)
             groups.append(group)
         return groups
 
-    def _llm_equivalent(self, left: dict, right: dict, score: float) -> bool:
+    def _llm_equivalent(self, left: dict, right: dict, score: float, workspace_id: str = "global") -> bool:
         if score >= 0.91:
             return True
         result = llm_client.complete_json(
@@ -46,6 +46,7 @@ class AlignmentAgent:
                 f"B: {right['name']} - {right['definition']}\n"
                 f"embedding_similarity: {score:.3f}"
             ),
+            workspace_id=workspace_id,
         )
         data = result.get("data")
         if not data:
@@ -68,4 +69,3 @@ def _cosine_vectors(a: list[float], b: list[float]) -> float:
     if norm_a == 0 or norm_b == 0:
         return 0.0
     return dot / (norm_a * norm_b)
-

@@ -19,7 +19,7 @@ class KnowledgeExtractionAgent:
         "知识点必须是教材中的教学概念，不要抽取孤立词语、页眉页脚、出版社信息或目录编号。"
     )
 
-    def extract(self, chapter: dict, textbook_id: str) -> tuple[list[KnowledgeNode], list[KnowledgeEdge], dict]:
+    def extract(self, chapter: dict, textbook_id: str, workspace_id: str = "global") -> tuple[list[KnowledgeNode], list[KnowledgeEdge], dict]:
         result = llm_client.complete_json(
             self.system_prompt,
             (
@@ -28,6 +28,7 @@ class KnowledgeExtractionAgent:
                 "请抽取 3-8 个核心知识点，以及它们之间最重要的关系。\n"
                 f"正文:\n{chapter['content'][:2400]}"
             ),
+            workspace_id=workspace_id,
         )
         if result.get("data"):
             try:
