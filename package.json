@@ -7,11 +7,10 @@
     "backend": "uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000",
     "frontend": "npm --prefix frontend run dev -- --host 0.0.0.0",
     "build": "npm --prefix frontend run build",
-    "test": "python3 -m pytest backend/tests",
-    "benchmark": "python3 scripts/run_rag_benchmark.py"
+    "test": "if [ -x .venv/bin/python ]; then .venv/bin/python -m pytest backend/tests; else python3 -m pytest backend/tests; fi",
+    "benchmark": "if [ -x .venv/bin/python ]; then .venv/bin/python scripts/run_rag_benchmark.py; else python3 scripts/run_rag_benchmark.py; fi"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"
   }
 }
-
