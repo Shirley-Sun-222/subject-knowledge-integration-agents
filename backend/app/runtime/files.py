@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import shutil
 from pathlib import Path
 
@@ -23,19 +24,28 @@ class RuntimeFiles:
         suffix = f".{format_name}" if format_name and not format_name.startswith(".") else format_name
         return self.workspace_upload_dir(workspace_id) / f"{textbook_id}{suffix or '.txt'}"
 
-    async def save_upload(self, workspace_id: str, textbook_id: str, file: UploadFile, format_name: str) -> tuple[Path, int]:
+    async def save_upload(self, workspace_id: str, textbook_id: str, file: UploadFile, format_name: str) -> tuple[Path, int, str]:
         destination = self.upload_path(workspace_id, textbook_id, format_name)
         size = 0
+        digest = hashlib.sha256()
         with destination.open("wb") as buffer:
             while chunk := await file.read(1024 * 1024):
                 size += len(chunk)
+                digest.update(chunk)
                 buffer.write(chunk)
-        return destination, size
+        return destination, size, digest.hexdigest()
 
-    def copy_upload(self, workspace_id: str, textbook_id: str, source: Path, format_name: str) -> Path:
+    def copy_upload(self, workspace_id: str, textbook_id: str, source: Path, format_name: str) -> tuple[Path, str]:
         destination = self.upload_path(workspace_id, textbook_id, format_name)
         shutil.copy2(source, destination)
-        return destination
+        return destination, self.file_hash(source)
+
+    def file_hash(self, path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     def report_markdown_path(self, workspace_id: str) -> Path:
         return self.workspace_generated_dir(workspace_id) / "整合报告.md"

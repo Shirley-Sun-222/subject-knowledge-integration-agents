@@ -28,6 +28,7 @@ class TaskContext:
     _last_progress_current: int | None = None
     _last_progress_total: int | None = None
     _last_truncated: bool | None = None
+    _last_metadata: dict[str, Any] | None = None
     _last_persisted_at: float = field(default_factory=monotonic)
 
     def start(self, phase: str, progress_total: int = 0) -> None:
@@ -43,12 +44,14 @@ class TaskContext:
         progress_current: int | None = None,
         progress_total: int | None = None,
         truncated: bool | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         if not self._should_persist_progress(
             phase=phase,
             progress_current=progress_current,
             progress_total=progress_total,
             truncated=truncated,
+            metadata=metadata,
         ):
             return
         state_store.update_task_progress(
@@ -58,6 +61,7 @@ class TaskContext:
             progress_current=progress_current,
             progress_total=progress_total,
             truncated=truncated,
+            metadata=metadata,
         )
         if phase is not None:
             self._last_phase = phase
@@ -67,6 +71,8 @@ class TaskContext:
             self._last_progress_total = progress_total
         if truncated is not None:
             self._last_truncated = truncated
+        if metadata is not None:
+            self._last_metadata = metadata
         self._last_persisted_at = monotonic()
 
     def _should_persist_progress(
@@ -76,12 +82,15 @@ class TaskContext:
         progress_current: int | None,
         progress_total: int | None,
         truncated: bool | None,
+        metadata: dict[str, Any] | None,
     ) -> bool:
         if phase is not None and phase != self._last_phase:
             return True
         if progress_total is not None and progress_total != self._last_progress_total:
             return True
         if truncated is not None and truncated != self._last_truncated:
+            return True
+        if metadata is not None and metadata != self._last_metadata:
             return True
         if progress_current is None:
             return False

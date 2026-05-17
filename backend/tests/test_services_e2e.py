@@ -206,3 +206,89 @@ def test_import_textbook_file_preserves_name_and_reports_graph_counts(tmp_path: 
     finally:
         object.__setattr__(settings, "database_url", original_database_url)
         object.__setattr__(settings, "upload_dir", original_upload_dir)
+
+
+def test_full_graph_ignores_global_limit_and_records_fast_chapters(tmp_path: Path, monkeypatch) -> None:
+    original_database_url = settings.database_url
+    original_limit = settings.graph_max_chapters
+    original_min_chars = settings.graph_full_llm_min_chars
+    object.__setattr__(settings, "database_url", f"sqlite:///{tmp_path / 'app.db'}")
+    object.__setattr__(settings, "graph_max_chapters", 1)
+    object.__setattr__(settings, "graph_full_llm_min_chars", 50)
+
+    class FakeExtractionAgent:
+        def extract(self, chapter: dict, textbook_id: str, workspace_id: str = "global"):
+            node = KnowledgeNode(
+                id=f"llm_{chapter['position']}",
+                textbook_id=textbook_id,
+                chapter_id=chapter["id"],
+                name=f"LLM概念{chapter['position']}",
+                definition="LLM 抽取",
+                category="核心概念",
+                page=chapter["page_start"],
+                source_excerpt=chapter["content"],
+                metadata={"strategy": "llm"},
+            )
+            return [node], [], {"elapsed_ms": 5, "token_estimate": 9, "fallback": False, "strategy": "llm"}
+
+        def extract_fast(self, chapter: dict, textbook_id: str):
+            node = KnowledgeNode(
+                id=f"fast_{chapter['position']}",
+                textbook_id=textbook_id,
+                chapter_id=chapter["id"],
+                name=f"快速概念{chapter['position']}",
+                definition="快速抽取",
+                category="相关概念",
+                page=chapter["page_start"],
+                source_excerpt=chapter["content"],
+                metadata={"fallback": True, "strategy": "heuristic_fast"},
+            )
+            return [node], []
+
+    monkeypatch.setattr(graph_service, "KnowledgeExtractionAgent", FakeExtractionAgent)
+    try:
+        init_db()
+        textbook_id = new_id("book")
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO textbooks
+                (id, filename, title, format, size_bytes, total_pages, total_chars, status, error, created_at)
+                VALUES (?, 'sample.md', 'sample', 'md', 10, 1, 1000, 'completed', NULL, '2026-05-14T00:00:00Z')
+                """,
+                (textbook_id,),
+            )
+            contents = [
+                "第 1 章 绪论\n" + ("内环境稳态。" * 20),
+                "第 2 章 附录\n短文本",
+                "第 3 章 免疫\n" + ("机体防御反应。" * 20),
+            ]
+            for position, content in enumerate(contents, start=1):
+                conn.execute(
+                    """
+                    INSERT INTO chapters (id, textbook_id, title, page_start, page_end, content, char_count, position)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        f"chapter_{position}",
+                        textbook_id,
+                        f"第 {position} 章",
+                        position,
+                        position,
+                        content,
+                        len(content),
+                        position,
+                    ),
+                )
+
+        graph = build_graph(textbook_id, max_chapters=0)
+
+        assert graph["metrics"]["processed_chapters"] == 3
+        assert graph["metrics"]["total_chapters"] == 3
+        assert graph["metrics"]["truncated"] is False
+        assert graph["metrics"]["llm_chapters"] == 2
+        assert graph["metrics"]["fast_chapters"] == 1
+    finally:
+        object.__setattr__(settings, "database_url", original_database_url)
+        object.__setattr__(settings, "graph_max_chapters", original_limit)
+        object.__setattr__(settings, "graph_full_llm_min_chars", original_min_chars)

@@ -15,6 +15,7 @@ function toDetail(task: TaskSummary): TaskDetail {
     progress_total: 0,
     truncated: false,
     error_summary: null,
+    metadata: {},
     result_ref: null,
     created_at: "",
     started_at: null,

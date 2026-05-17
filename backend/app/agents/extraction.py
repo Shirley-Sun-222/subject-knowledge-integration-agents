@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from functools import lru_cache
+from pathlib import Path
+
 from ..schemas import KnowledgeEdge, KnowledgeNode
 from ..services.llm import llm_client
 from ..utils.ids import new_id
@@ -17,12 +20,14 @@ class KnowledgeExtractionAgent:
         "边字段为 source_name, target_name, relation_type, description。"
         "relation_type 只能是 prerequisite, parallel, contains, applies_to。"
         "知识点必须是教材中的教学概念，不要抽取孤立词语、页眉页脚、出版社信息或目录编号。"
+        "请参考示例，保持 JSON 字段完整、定义简洁、关系方向合理。"
     )
 
     def extract(self, chapter: dict, textbook_id: str, workspace_id: str = "global") -> tuple[list[KnowledgeNode], list[KnowledgeEdge], dict]:
         result = llm_client.complete_json(
             self.system_prompt,
             (
+                f"{few_shot_examples()}\n\n"
                 f"教材章节: {chapter['title']}\n"
                 f"起始页: {chapter['page_start']}\n"
                 "请抽取 3-8 个核心知识点，以及它们之间最重要的关系。\n"
@@ -35,13 +40,16 @@ class KnowledgeExtractionAgent:
                 return self._from_llm(result["data"], chapter, textbook_id, result)
             except Exception as exc:
                 result["schema_error"] = str(exc)
-        nodes, edges = self._heuristic(chapter, textbook_id)
+        nodes, edges = self.extract_fast(chapter, textbook_id)
         metrics = {"elapsed_ms": result.elapsed_ms, "token_estimate": result.token_estimate, "fallback": True}
         if result.get("error"):
             metrics["error"] = result["error"]
         if result.get("schema_error"):
             metrics["schema_error"] = result["schema_error"]
         return nodes, edges, metrics
+
+    def extract_fast(self, chapter: dict, textbook_id: str) -> tuple[list[KnowledgeNode], list[KnowledgeEdge]]:
+        return self._heuristic(chapter, textbook_id)
 
     def _from_llm(self, data: dict, chapter: dict, textbook_id: str, metrics: dict) -> tuple[list[KnowledgeNode], list[KnowledgeEdge], dict]:
         raw_nodes = data.get("nodes", [])
@@ -62,7 +70,7 @@ class KnowledgeExtractionAgent:
                     category=str(raw.get("category", "核心概念")).strip() or "核心概念",
                     page=int(raw.get("page") or chapter["page_start"]),
                     source_excerpt=str(raw.get("source_excerpt", chapter["content"][:160])).strip()[:400],
-                    metadata={"agent": "KnowledgeExtractionAgent"},
+                    metadata={"agent": "KnowledgeExtractionAgent", "strategy": "llm"},
                 )
             )
         edges: list[KnowledgeEdge] = []
@@ -104,7 +112,7 @@ class KnowledgeExtractionAgent:
                     category="核心概念" if index == 0 else "相关概念",
                     page=chapter["page_start"],
                     source_excerpt=excerpt,
-                    metadata={"agent": "KnowledgeExtractionAgent", "fallback": True},
+                    metadata={"agent": "KnowledgeExtractionAgent", "fallback": True, "strategy": "heuristic_fast"},
                 )
             )
         edges: list[KnowledgeEdge] = []
@@ -121,3 +129,9 @@ class KnowledgeExtractionAgent:
                 )
             )
         return nodes, edges
+
+
+@lru_cache(maxsize=1)
+def few_shot_examples() -> str:
+    path = Path(__file__).with_name("extraction_few_shots.md")
+    return path.read_text(encoding="utf-8").strip()

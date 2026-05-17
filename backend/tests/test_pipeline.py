@@ -140,5 +140,51 @@ def test_parse_pdf_reports_progress_and_detects_pdf_mode(tmp_path: Path, monkeyp
     assert any(event[0] == "reading_pdf_pages" for event in progress_events)
 
 
+def test_parse_pdf_prefers_top_level_toc_chapters(tmp_path: Path) -> None:
+    fitz = pytest.importorskip("fitz")
+    path = tmp_path / "toc.pdf"
+    document = fitz.open()
+    document.new_page().insert_text((72, 72), "cover page")
+    document.new_page().insert_text((72, 72), "chapter one overview\nacid base balance keeps body fluids stable.")
+    document.new_page().insert_text((72, 72), "section one cells\ncells are the basic unit of life.")
+    document.new_page().insert_text((72, 72), "chapter two immunity\nimmune defense protects the body.")
+    document.set_toc(
+        [
+            [1, "封面页", 1],
+            [1, "第一章 绪论", 2],
+            [2, "第一节 细胞", 3],
+            [1, "第二章 免疫", 4],
+        ]
+    )
+    document.save(path)
+    document.close()
+
+    parsed = parse_textbook(path, path.name)
+
+    assert len(parsed["chapters"]) == 2
+    assert parsed["chapters"][0]["title"] == "第一章 绪论"
+    assert parsed["chapters"][0]["page_start"] == 2
+    assert "cells are the basic unit of life" in parsed["chapters"][0]["content"]
+    assert parsed["chapters"][1]["title"] == "第二章 免疫"
+
+
+def test_parse_pdf_scanned_mode_ocrs_entire_book(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fitz = pytest.importorskip("fitz")
+    path = tmp_path / "scan-all.pdf"
+    document = fitz.open()
+    document.new_page()
+    document.new_page()
+    document.save(path)
+    document.close()
+
+    calls: list[int] = []
+    monkeypatch.setattr(parser, "_ocr_pdf_page", lambda page: calls.append(page.number) or f"第 {page.number + 1} 页 OCR 文本")
+
+    parsed = parse_textbook(path, path.name)
+
+    assert parsed["total_pages"] == 2
+    assert sorted(calls) == [0, 1]
+
+
 if __name__ == "__main__":
     unittest.main()

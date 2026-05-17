@@ -23,6 +23,7 @@ type GraphView = {
     truncated?: boolean;
     fallback_chapters?: number;
     llm_chapters?: number;
+    fast_chapters?: number;
     llm_configured?: boolean;
   };
 };
@@ -112,7 +113,9 @@ function App() {
           metrics: {
             processed_chapters: task.progress_current,
             total_chapters: task.progress_total,
-            truncated: task.truncated
+            truncated: task.truncated,
+            llm_chapters: Number(task.metadata?.llm_chapters || 0),
+            fast_chapters: Number(task.metadata?.fast_chapters || 0)
           }
         });
         return;
@@ -407,7 +410,11 @@ function App() {
           </div>
           {graphView.metrics?.total_chapters !== undefined && (
             <span className={graphView.metrics.truncated ? "status-warning" : "status-ok"}>
-              已处理 {graphView.metrics.processed_chapters || 0}/{graphView.metrics.total_chapters} 章{graphView.metrics.truncated ? "，已按上限截断" : ""}
+              已处理 {graphView.metrics.processed_chapters || 0}/{graphView.metrics.total_chapters} 章
+              {graphView.metrics.truncated ? "，已按上限截断" : ""}
+              {graphView.metrics.llm_chapters !== undefined && graphView.metrics.fast_chapters !== undefined
+                ? `（LLM ${graphView.metrics.llm_chapters} 章 / 快速抽取 ${graphView.metrics.fast_chapters} 章）`
+                : ""}
             </span>
           )}
           {graphQuality && <span className={graphQuality.kind === "warning" ? "status-warning" : "status-ok"}>{graphQuality.label}</span>}
@@ -544,11 +551,12 @@ function tabLabel(tab: Tab) {
 
 function describeGraphQuality(metrics: GraphView["metrics"], nodes: KnowledgeNode[]) {
   if (metrics?.processed_chapters) {
-    const fallbackChapters = metrics.fallback_chapters || 0;
-    if (fallbackChapters > 0) {
-      return { kind: "warning", label: `关键词降级抽取 ${fallbackChapters}/${metrics.processed_chapters} 章，质量有限` };
+    const fastChapters = metrics.fast_chapters ?? metrics.fallback_chapters ?? 0;
+    const llmChapters = metrics.llm_chapters ?? Math.max((metrics.processed_chapters || 0) - fastChapters, 0);
+    if (fastChapters > 0) {
+      return { kind: "warning", label: `已处理 ${metrics.processed_chapters} 章，LLM ${llmChapters} 章 / 快速抽取 ${fastChapters} 章` };
     }
-    return { kind: "ok", label: `已处理 ${metrics.processed_chapters} 章图谱` };
+    return { kind: "ok", label: `已处理 ${metrics.processed_chapters} 章图谱，全部走 LLM 抽取` };
   }
   if (!nodes.length) {
     return null;
@@ -562,7 +570,10 @@ function describeGraphQuality(metrics: GraphView["metrics"], nodes: KnowledgeNod
 
 function renderTaskProgress(task: TaskDetail) {
   if (task.progress_total > 0) {
-    return `${task.progress_current}/${task.progress_total}${task.truncated ? "，已截断" : ""}`;
+    const llmChapters = Number(task.metadata?.llm_chapters || 0);
+    const fastChapters = Number(task.metadata?.fast_chapters || 0);
+    const quality = llmChapters > 0 || fastChapters > 0 ? `（LLM ${llmChapters} / 快速 ${fastChapters}）` : "";
+    return `${task.progress_current}/${task.progress_total}${task.truncated ? "，已截断" : ""}${quality}`;
   }
   return task.status;
 }

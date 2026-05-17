@@ -59,6 +59,7 @@ def init_db() -> None:
                 filename TEXT NOT NULL,
                 title TEXT NOT NULL,
                 format TEXT NOT NULL,
+                file_hash TEXT,
                 size_bytes INTEGER NOT NULL,
                 total_pages INTEGER NOT NULL DEFAULT 0,
                 total_chars INTEGER NOT NULL DEFAULT 0,
@@ -162,6 +163,7 @@ def init_db() -> None:
                 progress_total INTEGER NOT NULL DEFAULT 0,
                 truncated INTEGER NOT NULL DEFAULT 0,
                 error_summary TEXT,
+                metadata TEXT,
                 result_ref TEXT,
                 created_at TEXT NOT NULL,
                 started_at TEXT,
@@ -209,9 +211,22 @@ def init_db() -> None:
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY(workspace_id) REFERENCES session_workspaces(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS parsed_textbook_cache (
+                file_hash TEXT PRIMARY KEY,
+                format TEXT NOT NULL,
+                title TEXT NOT NULL,
+                total_pages INTEGER NOT NULL,
+                total_chars INTEGER NOT NULL,
+                chapters_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             """
         )
         _ensure_workspace_columns(conn)
+        _ensure_textbook_hash_column(conn)
+        _ensure_task_metadata_column(conn)
         _ensure_index_metadata_tables(conn)
 
 
@@ -256,3 +271,14 @@ def _ensure_workspace_columns(conn: sqlite3.Connection) -> None:
 def _ensure_index_metadata_tables(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_task_runs_workspace_status ON task_runs(workspace_id, status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_rag_index_entries_workspace_textbook ON rag_index_entries(workspace_id, textbook_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_textbooks_workspace_hash ON textbooks(workspace_id, file_hash)")
+
+
+def _ensure_textbook_hash_column(conn: sqlite3.Connection) -> None:
+    if not _has_column(conn, "textbooks", "file_hash"):
+        conn.execute("ALTER TABLE textbooks ADD COLUMN file_hash TEXT")
+
+
+def _ensure_task_metadata_column(conn: sqlite3.Connection) -> None:
+    if not _has_column(conn, "task_runs", "metadata"):
+        conn.execute("ALTER TABLE task_runs ADD COLUMN metadata TEXT")

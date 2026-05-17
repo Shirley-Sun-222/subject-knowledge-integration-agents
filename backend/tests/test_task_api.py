@@ -399,3 +399,25 @@ def test_rag_index_rebuilds_only_changed_chapters(tmp_path: Path) -> None:
         assert second["reused_chapters"] == 1
     finally:
         _restore_runtime_paths(originals)
+
+
+def test_parse_cache_reuses_results_across_workspaces(tmp_path: Path, monkeypatch) -> None:
+    originals = _set_runtime_paths(tmp_path)
+    original_parse_textbook = main.textbooks.parse_textbook
+    try:
+        init_db()
+        source = tmp_path / "生理学.md"
+        source.write_text("第 1 章 绪论\n内环境稳态维持生命活动。", encoding="utf-8")
+
+        first = import_textbook_file(source, workspace_id="ws_a")
+        assert first["status"] == "completed"
+
+        monkeypatch.setattr(main.textbooks, "parse_textbook", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("should not parse twice")))
+        second = import_textbook_file(source, workspace_id="ws_b")
+
+        assert second["status"] == "completed"
+        assert len(second["chapters"]) == len(first["chapters"])
+        assert second["total_chars"] == first["total_chars"]
+    finally:
+        monkeypatch.setattr(main.textbooks, "parse_textbook", original_parse_textbook)
+        _restore_runtime_paths(originals)

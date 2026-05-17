@@ -19,6 +19,7 @@ def _task_from_row(row) -> dict[str, Any] | None:
     task["truncated"] = bool(task.get("truncated"))
     task["progress_current"] = int(task.get("progress_current") or 0)
     task["progress_total"] = int(task.get("progress_total") or 0)
+    task["metadata"] = json_loads(task.get("metadata"), {})
     return task
 
 
@@ -129,16 +130,25 @@ class RuntimeStateStore:
         runtime_files.delete_workspace_files(workspace_id)
         self._forget_workspace_activity(workspace_id)
 
-    def create_textbook(self, workspace_id: str, textbook_id: str, filename: str, format_name: str, size_bytes: int, created_at: str | None = None) -> dict[str, Any]:
+    def create_textbook(
+        self,
+        workspace_id: str,
+        textbook_id: str,
+        filename: str,
+        format_name: str,
+        size_bytes: int,
+        created_at: str | None = None,
+        file_hash: str | None = None,
+    ) -> dict[str, Any]:
         self.ensure_workspace(workspace_id)
         created_at = created_at or utc_now()
         with connect() as conn:
             conn.execute(
                 """
-                INSERT INTO textbooks (id, workspace_id, filename, title, format, size_bytes, total_pages, total_chars, status, error, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, 0, 0, 'parsing', NULL, ?)
+                INSERT INTO textbooks (id, workspace_id, filename, title, format, file_hash, size_bytes, total_pages, total_chars, status, error, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 'parsing', NULL, ?)
                 """,
-                (textbook_id, workspace_id, filename, filename.rsplit(".", 1)[0], format_name, size_bytes, created_at),
+                (textbook_id, workspace_id, filename, filename.rsplit(".", 1)[0], format_name, file_hash, size_bytes, created_at),
             )
         return self.get_textbook(workspace_id, textbook_id)
 
@@ -180,6 +190,42 @@ class RuntimeStateStore:
         with connect() as conn:
             conn.execute("UPDATE textbooks SET status = 'failed', error = ? WHERE workspace_id = ? AND id = ?", (error_summary, workspace_id, textbook_id))
         return self.get_textbook(workspace_id, textbook_id)
+
+    def get_parsed_textbook_cache(self, file_hash: str) -> dict[str, Any] | None:
+        with connect() as conn:
+            row = conn.execute("SELECT * FROM parsed_textbook_cache WHERE file_hash = ?", (file_hash,)).fetchone()
+        if row is None:
+            return None
+        payload = row_to_dict(row)
+        payload["chapters"] = json_loads(payload["chapters_json"], [])
+        return payload
+
+    def store_parsed_textbook_cache(self, file_hash: str, format_name: str, parsed: dict[str, Any]) -> None:
+        timestamp = utc_now()
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO parsed_textbook_cache (file_hash, format, title, total_pages, total_chars, chapters_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(file_hash) DO UPDATE SET
+                    format = excluded.format,
+                    title = excluded.title,
+                    total_pages = excluded.total_pages,
+                    total_chars = excluded.total_chars,
+                    chapters_json = excluded.chapters_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    file_hash,
+                    format_name,
+                    parsed["title"],
+                    parsed["total_pages"],
+                    parsed["total_chars"],
+                    json_dumps(parsed["chapters"]),
+                    timestamp,
+                    timestamp,
+                ),
+            )
 
     def delete_textbook(self, workspace_id: str, textbook_id: str) -> None:
         with connect() as conn:
@@ -672,6 +718,7 @@ class RuntimeStateStore:
         error_summary: str | None = None,
         progress_current: int = 0,
         progress_total: int = 0,
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         self.ensure_workspace(workspace_id)
         status = "failed" if error_summary else "succeeded"
@@ -681,8 +728,8 @@ class RuntimeStateStore:
             conn.execute(
                 """
                 INSERT INTO task_runs
-                (id, workspace_id, task_type, resource_type, resource_id, status, phase, progress_current, progress_total, truncated, error_summary, result_ref, created_at, started_at, finished_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, workspace_id, task_type, resource_type, resource_id, status, phase, progress_current, progress_total, truncated, error_summary, metadata, result_ref, created_at, started_at, finished_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -696,6 +743,7 @@ class RuntimeStateStore:
                     progress_total,
                     1 if truncated else 0,
                     error_summary,
+                    json_dumps(metadata or {}),
                     result_ref,
                     created_at,
                     created_at,
@@ -768,6 +816,7 @@ class RuntimeStateStore:
         progress_current: int | None = None,
         progress_total: int | None = None,
         truncated: bool | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         assignments = []
         params: list[Any] = []
@@ -783,6 +832,9 @@ class RuntimeStateStore:
         if truncated is not None:
             assignments.append("truncated = ?")
             params.append(1 if truncated else 0)
+        if metadata is not None:
+            assignments.append("metadata = ?")
+            params.append(json_dumps(metadata))
         if not assignments:
             return
         params.extend([workspace_id, task_id])

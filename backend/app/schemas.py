@@ -123,6 +123,7 @@ class TaskDetail(TaskSummary):
     progress_total: int = 0
     truncated: bool = False
     error_summary: str | None = None
+    metadata: dict = Field(default_factory=dict)
     result_ref: str | None = None
     created_at: str
     started_at: str | None = None

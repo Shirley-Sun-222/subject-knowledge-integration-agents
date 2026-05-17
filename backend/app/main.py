@@ -85,7 +85,7 @@ def build_graph(payload: dict, request: Request, response: Response) -> dict:
     mode = payload.get("mode", "preview")
     max_chapters = payload.get("max_chapters")
     if mode == "full":
-        max_chapters = None
+        max_chapters = 0
     elif max_chapters is not None:
         try:
             max_chapters = int(max_chapters)
@@ -265,6 +265,7 @@ def _task_detail(task: dict) -> dict:
         progress_total=task.get("progress_total", 0),
         truncated=bool(task.get("truncated", False)),
         error_summary=task.get("error_summary"),
+        metadata=task.get("metadata", {}),
         result_ref=task.get("result_ref"),
         created_at=task["created_at"],
         started_at=task.get("started_at"),

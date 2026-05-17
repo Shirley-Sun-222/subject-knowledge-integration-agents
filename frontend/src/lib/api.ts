@@ -28,6 +28,7 @@ export type TaskDetail = TaskSummary & {
   progress_total: number;
   truncated: boolean;
   error_summary?: string | null;
+  metadata?: Record<string, unknown>;
   result_ref?: string | null;
   created_at: string;
   started_at?: string | null;
@@ -107,6 +108,7 @@ export type GraphResult = {
     truncated?: boolean;
     fallback_chapters?: number;
     llm_chapters?: number;
+    fast_chapters?: number;
     llm_configured?: boolean;
   };
 };

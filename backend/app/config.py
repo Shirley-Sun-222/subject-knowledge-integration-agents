@@ -40,8 +40,13 @@ class Settings:
     ocr_enabled: bool = os.getenv("OCR_ENABLED", "1") == "1"
     ocr_max_pages: int = int(os.getenv("OCR_MAX_PAGES", "120"))
     ocr_lang: str = os.getenv("OCR_LANG", "chi_sim+eng")
+    pdf_text_extract_workers: int = int(os.getenv("PDF_TEXT_EXTRACT_WORKERS", "6"))
+    pdf_ocr_workers: int = int(os.getenv("PDF_OCR_WORKERS", "4"))
+    parse_cache_enabled: bool = os.getenv("PARSE_CACHE_ENABLED", "1") == "1"
     graph_max_chapters: int = int(os.getenv("GRAPH_MAX_CHAPTERS", "30"))
     graph_extract_workers: int = int(os.getenv("GRAPH_EXTRACT_WORKERS", "2"))
+    graph_full_llm_min_chars: int = int(os.getenv("GRAPH_FULL_LLM_MIN_CHARS", "900"))
+    graph_full_llm_min_keywords: int = int(os.getenv("GRAPH_FULL_LLM_MIN_KEYWORDS", "3"))
     pdf_renderer: str = os.getenv("PDF_RENDERER", "playwright")
     session_workspace_ttl_seconds: int = int(os.getenv("SESSION_WORKSPACE_TTL_SECONDS", str(24 * 60 * 60)))
     workspace_touch_interval_seconds: int = int(os.getenv("WORKSPACE_TOUCH_INTERVAL_SECONDS", "60"))

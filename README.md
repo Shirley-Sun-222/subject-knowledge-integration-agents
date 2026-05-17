@@ -5,6 +5,9 @@
 ## 项目概览
 
 - 多格式教材上传与解析：PDF、Markdown、TXT、DOCX
+- 优先使用 PDF TOC/书签切章，缺失时回退正则识别
+- 并行原生文本抽取 + 并行 OCR，加速大 PDF 解析
+- 相同教材按文件哈希复用解析结果，减少重复等待
 - 单本教材知识图谱构建与可视化
 - 跨教材知识点对齐、整合与压缩决策
 - 带引用的 RAG 问答与领域外拒答
@@ -47,6 +50,9 @@ npm run dev
 - 官方教材放在本地 `textbooks/` 目录，仅用于本地实验与报告撰写，不提交到 GitHub。
 - P2 医学 benchmark 题集位于 `scripts/benchmark_sets/medical_official_questions.json`。
 - P2 实验脚本为 `scripts/run_p2_rag_experiments.py`，会把原始结果写到本地 `data/generated/p2-rag-official/`。
+- 图谱模式语义已区分：
+  - `预览图谱`：允许按章节数截断，优先快速反馈
+  - `全量图谱`：明确忽略 `GRAPH_MAX_CHAPTERS`，处理全部章节
 
 ## 隐私与数据安全
 
