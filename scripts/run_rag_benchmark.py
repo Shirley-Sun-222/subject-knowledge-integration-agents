@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 import time
@@ -15,7 +16,7 @@ from backend.app.services.embedding import embedding_service
 from backend.app.services import rag
 
 
-QUESTIONS: list[dict[str, Any]] = [
+DEFAULT_QUESTIONS: list[dict[str, Any]] = [
     {"id": "fact_sort_01", "category": "fact", "question": "快速排序的核心思想是什么？", "should_cite": True, "expected_source_hints": ["快速排序", "排序", "分治"], "expected_answer_terms": ["分治", "排序"]},
     {"id": "fact_sort_02", "category": "fact", "question": "归并排序为什么属于分治算法？", "should_cite": True, "expected_source_hints": ["归并排序", "排序", "分治"], "expected_answer_terms": ["分治", "归并"]},
     {"id": "fact_sort_03", "category": "fact", "question": "插入排序通常如何处理待排序元素？", "should_cite": True, "expected_source_hints": ["插入排序", "排序"], "expected_answer_terms": ["插入", "排序"]},
@@ -42,6 +43,15 @@ QUESTIONS: list[dict[str, Any]] = [
     {"id": "reject_02", "category": "out_of_domain", "question": "今天美元兑人民币汇率是多少？", "should_cite": False, "expected_source_hints": [], "expected_answer_terms": []},
     {"id": "reject_03", "category": "out_of_domain", "question": "请推荐三家北京烤鸭餐厅。", "should_cite": False, "expected_source_hints": [], "expected_answer_terms": []},
 ]
+
+
+def load_questions(path: str | Path | None = None) -> list[dict[str, Any]]:
+    if path is None:
+        return DEFAULT_QUESTIONS
+    question_path = Path(path)
+    if not question_path.is_absolute():
+        question_path = ROOT / question_path
+    return json.loads(question_path.read_text(encoding="utf-8"))
 
 
 def field(value: Any, name: str, default: Any = "") -> Any:
@@ -99,14 +109,21 @@ def ratio(rows: list[dict[str, Any]], key: str) -> float:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Run the RAG benchmark against the current local index.")
+    parser.add_argument("--question-set", default=None, help="Optional JSON file containing benchmark questions.")
+    parser.add_argument("--output", default="data/generated/rag-benchmark.json", help="Path to write the JSON summary.")
+    parser.add_argument("--top-k", type=int, default=5, help="Number of retrieved chunks to evaluate per query.")
+    args = parser.parse_args()
+
+    questions = load_questions(args.question_set)
     init_db()
     embedding_service._model_failed = True
     embedding_service._model = None
     output = []
     started = time.perf_counter()
     status = rag.status()
-    for item in QUESTIONS:
-        response = rag.query(item["question"], top_k=5)
+    for item in questions:
+        response = rag.query(item["question"], top_k=args.top_k)
         evaluation = evaluate_response(item, response)
         output.append(
             {
@@ -131,7 +148,7 @@ def main() -> None:
     negative = [row for row in output if not row["should_cite"]]
     summary = {
         "status": status,
-        "question_count": len(QUESTIONS),
+        "question_count": len(questions),
         "positive_question_count": len(positive),
         "negative_question_count": len(negative),
         "total_elapsed_ms": total_elapsed_ms,
@@ -148,7 +165,9 @@ def main() -> None:
         },
         "results": output,
     }
-    path = Path("data/generated/rag-benchmark.json")
+    path = Path(args.output)
+    if not path.is_absolute():
+        path = ROOT / path
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(summary, ensure_ascii=False, indent=2))

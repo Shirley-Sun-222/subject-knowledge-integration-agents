@@ -1,0 +1,202 @@
+[
+  {
+    "id": "fact_hist_01",
+    "category": "fact",
+    "question": "上皮组织通常有哪些一般特点？",
+    "should_cite": true,
+    "expected_source_hints": ["上皮组织", "组织"],
+    "expected_answer_terms": ["上皮"]
+  },
+  {
+    "id": "fact_phys_01",
+    "category": "fact",
+    "question": "内环境稳态的概念是什么？",
+    "should_cite": true,
+    "expected_source_hints": ["内环境", "稳态"],
+    "expected_answer_terms": ["内环境", "稳态"]
+  },
+  {
+    "id": "fact_micro_01",
+    "category": "fact",
+    "question": "细菌细胞壁的主要作用是什么？",
+    "should_cite": true,
+    "expected_source_hints": ["细胞壁", "细菌"],
+    "expected_answer_terms": ["细胞壁"]
+  },
+  {
+    "id": "fact_path_01",
+    "category": "fact",
+    "question": "炎症的基本病理变化通常包括哪些方面？",
+    "should_cite": true,
+    "expected_source_hints": ["炎症", "病理"],
+    "expected_answer_terms": ["炎症"]
+  },
+  {
+    "id": "fact_infect_01",
+    "category": "fact",
+    "question": "传染病流行过程的三个基本环节是什么？",
+    "should_cite": true,
+    "expected_source_hints": ["传染病", "流行", "传染源", "传播途径", "易感人群"],
+    "expected_answer_terms": ["传染源", "传播途径", "易感人群"]
+  },
+  {
+    "id": "compare_micro_01",
+    "category": "compare",
+    "question": "外毒素和内毒素有什么区别？",
+    "should_cite": true,
+    "expected_source_hints": ["外毒素", "内毒素"],
+    "expected_answer_terms": ["外毒素", "内毒素"]
+  },
+  {
+    "id": "compare_path_01",
+    "category": "compare",
+    "question": "坏死和凋亡有什么区别？",
+    "should_cite": true,
+    "expected_source_hints": ["坏死", "凋亡"],
+    "expected_answer_terms": ["坏死", "凋亡"]
+  },
+  {
+    "id": "compare_path_02",
+    "category": "compare",
+    "question": "急性炎症和慢性炎症有什么不同？",
+    "should_cite": true,
+    "expected_source_hints": ["急性炎症", "慢性炎症"],
+    "expected_answer_terms": ["急性", "慢性"]
+  },
+  {
+    "id": "compare_micro_02",
+    "category": "compare",
+    "question": "消毒和灭菌有什么区别？",
+    "should_cite": true,
+    "expected_source_hints": ["消毒", "灭菌"],
+    "expected_answer_terms": ["消毒", "灭菌"]
+  },
+  {
+    "id": "compare_pathophys_01",
+    "category": "compare",
+    "question": "呼吸性酸中毒和代谢性酸中毒有什么区别？",
+    "should_cite": true,
+    "expected_source_hints": ["呼吸性酸中毒", "代谢性酸中毒", "酸中毒"],
+    "expected_answer_terms": ["呼吸性", "代谢性"]
+  },
+  {
+    "id": "reason_infect_01",
+    "category": "reason",
+    "question": "为什么严重感染常常会引起发热？",
+    "should_cite": true,
+    "expected_source_hints": ["感染", "发热", "炎症"],
+    "expected_answer_terms": ["发热", "感染"]
+  },
+  {
+    "id": "reason_pathophys_01",
+    "category": "reason",
+    "question": "为什么水肿会发生？",
+    "should_cite": true,
+    "expected_source_hints": ["水肿"],
+    "expected_answer_terms": ["水肿"]
+  },
+  {
+    "id": "reason_pathophys_02",
+    "category": "reason",
+    "question": "为什么休克会导致组织灌流不足？",
+    "should_cite": true,
+    "expected_source_hints": ["休克", "灌流"],
+    "expected_answer_terms": ["休克", "灌流"]
+  },
+  {
+    "id": "reason_pathophys_03",
+    "category": "reason",
+    "question": "为什么酸碱平衡紊乱会影响细胞功能？",
+    "should_cite": true,
+    "expected_source_hints": ["酸碱平衡", "酸中毒", "碱中毒"],
+    "expected_answer_terms": ["酸碱", "细胞"]
+  },
+  {
+    "id": "reason_micro_01",
+    "category": "reason",
+    "question": "为什么细菌耐药性会增加感染治疗的难度？",
+    "should_cite": true,
+    "expected_source_hints": ["耐药性", "细菌", "感染"],
+    "expected_answer_terms": ["耐药", "治疗"]
+  },
+  {
+    "id": "cross_book_01",
+    "category": "cross_textbook",
+    "question": "从病原体入侵到临床发热，多本教材通常如何串联这一过程？",
+    "should_cite": true,
+    "expected_source_hints": ["病原体", "感染", "发热", "炎症"],
+    "expected_answer_terms": ["感染", "发热"]
+  },
+  {
+    "id": "cross_book_02",
+    "category": "cross_textbook",
+    "question": "多本教材如何共同解释炎症的发生、发展与结局？",
+    "should_cite": true,
+    "expected_source_hints": ["炎症", "结局", "病理"],
+    "expected_answer_terms": ["炎症"]
+  },
+  {
+    "id": "cross_book_03",
+    "category": "cross_textbook",
+    "question": "多本教材对休克的病因、机制和后果通常如何整合说明？",
+    "should_cite": true,
+    "expected_source_hints": ["休克", "机制", "后果"],
+    "expected_answer_terms": ["休克"]
+  },
+  {
+    "id": "cross_book_04",
+    "category": "cross_textbook",
+    "question": "机体抗感染防御通常涉及哪些共同环节？",
+    "should_cite": true,
+    "expected_source_hints": ["感染", "免疫", "防御"],
+    "expected_answer_terms": ["防御", "感染"]
+  },
+  {
+    "id": "cross_book_05",
+    "category": "cross_textbook",
+    "question": "酸碱平衡紊乱在生理学和病理生理学中通常涉及哪些共同概念？",
+    "should_cite": true,
+    "expected_source_hints": ["酸碱平衡", "生理", "病理生理"],
+    "expected_answer_terms": ["酸碱平衡"]
+  },
+  {
+    "id": "reject_01",
+    "category": "out_of_domain",
+    "question": "今天美元兑人民币汇率是多少？",
+    "should_cite": false,
+    "expected_source_hints": [],
+    "expected_answer_terms": []
+  },
+  {
+    "id": "reject_02",
+    "category": "out_of_domain",
+    "question": "请推荐三家北京烤鸭餐厅。",
+    "should_cite": false,
+    "expected_source_hints": [],
+    "expected_answer_terms": []
+  },
+  {
+    "id": "reject_03",
+    "category": "out_of_domain",
+    "question": "欧洲冠军联赛昨晚谁赢了？",
+    "should_cite": false,
+    "expected_source_hints": [],
+    "expected_answer_terms": []
+  },
+  {
+    "id": "reject_04",
+    "category": "out_of_domain",
+    "question": "量子计算机如何实现纠缠门操作？",
+    "should_cite": false,
+    "expected_source_hints": [],
+    "expected_answer_terms": []
+  },
+  {
+    "id": "reject_05",
+    "category": "out_of_domain",
+    "question": "如何给电动汽车设计更高效的电池热管理系统？",
+    "should_cite": false,
+    "expected_source_hints": [],
+    "expected_answer_terms": []
+  }
+]
