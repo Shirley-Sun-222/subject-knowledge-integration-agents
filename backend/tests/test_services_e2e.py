@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from backend.app.agents.report import ReportAgent
 from backend.app.config import settings
 from backend.app.db import connect, init_db
@@ -9,6 +11,7 @@ from backend.app.schemas import KnowledgeEdge, KnowledgeNode
 from backend.app.services.embedding import embedding_service
 from backend.app.services import graph as graph_service
 from backend.app.services.graph import build_graph
+from backend.app.services.llm import LlmResult, llm_client
 from backend.app.services.integration import run_integration
 from backend.app.services.parser import parse_textbook
 from backend.app.services.rag import build_index, query
@@ -68,6 +71,8 @@ def test_services_end_to_end(tmp_path: Path) -> None:
         assert graph["metrics"]["fallback_chapters"] == graph["metrics"]["processed_chapters"]
         assert graph["metrics"]["llm_chapters"] == 0
         assert graph["metrics"]["llm_configured"] is False
+        assert graph["metrics"]["llm_config_source"] == "none"
+        assert graph["metrics"]["low_quality_without_llm"] is True
         assert graph["nodes"][0]["chapter_title"]
         assert graph["nodes"][0]["chapter_position"] >= 1
         assert graph["nodes"][0]["page_start"] >= 1
@@ -90,7 +95,11 @@ def test_services_end_to_end(tmp_path: Path) -> None:
 
 def test_build_graph_limits_processed_chapters_and_reports_truncation(tmp_path: Path, monkeypatch) -> None:
     original_database_url = settings.database_url
+    original_llm_base_url = settings.llm_base_url
+    original_llm_api_key = settings.llm_api_key
     object.__setattr__(settings, "database_url", f"sqlite:///{tmp_path / 'app.db'}")
+    object.__setattr__(settings, "llm_base_url", "https://llm.example.test/v1")
+    object.__setattr__(settings, "llm_api_key", "test-key")
     object.__setattr__(settings, "graph_max_chapters", 2)
 
     class FakeExtractionAgent:
@@ -153,7 +162,7 @@ def test_build_graph_limits_processed_chapters_and_reports_truncation(tmp_path: 
         assert graph["metrics"]["truncated"] is True
         assert graph["metrics"]["fallback_chapters"] == 0
         assert graph["metrics"]["llm_chapters"] == 1
-        assert graph["metrics"]["llm_configured"] is False
+        assert graph["metrics"]["llm_configured"] is True
         assert len(graph["nodes"]) == 1
         assert graph["nodes"][0]["chapter_title"] == "第 1 章"
         assert graph["nodes"][0]["chapter_position"] == 1
@@ -161,6 +170,8 @@ def test_build_graph_limits_processed_chapters_and_reports_truncation(tmp_path: 
         assert graph["nodes"][0]["page_end"] == 1
     finally:
         object.__setattr__(settings, "database_url", original_database_url)
+        object.__setattr__(settings, "llm_base_url", original_llm_base_url)
+        object.__setattr__(settings, "llm_api_key", original_llm_api_key)
         object.__setattr__(settings, "graph_max_chapters", 30)
 
 
@@ -212,9 +223,13 @@ def test_full_graph_ignores_global_limit_and_records_fast_chapters(tmp_path: Pat
     original_database_url = settings.database_url
     original_limit = settings.graph_max_chapters
     original_min_chars = settings.graph_full_llm_min_chars
+    original_llm_base_url = settings.llm_base_url
+    original_llm_api_key = settings.llm_api_key
     object.__setattr__(settings, "database_url", f"sqlite:///{tmp_path / 'app.db'}")
     object.__setattr__(settings, "graph_max_chapters", 1)
     object.__setattr__(settings, "graph_full_llm_min_chars", 50)
+    object.__setattr__(settings, "llm_base_url", "https://llm.example.test/v1")
+    object.__setattr__(settings, "llm_api_key", "test-key")
 
     class FakeExtractionAgent:
         def extract(self, chapter: dict, textbook_id: str, workspace_id: str = "global"):
@@ -261,7 +276,7 @@ def test_full_graph_ignores_global_limit_and_records_fast_chapters(tmp_path: Pat
             contents = [
                 "第 1 章 绪论\n" + ("内环境稳态。" * 20),
                 "第 2 章 附录\n短文本",
-                "第 3 章 免疫\n" + ("机体防御反应。" * 20),
+                "第 3 章 免疫\n机体防御反应。抗原识别和免疫应答。",
             ]
             for position, content in enumerate(contents, start=1):
                 conn.execute(
@@ -272,7 +287,7 @@ def test_full_graph_ignores_global_limit_and_records_fast_chapters(tmp_path: Pat
                     (
                         f"chapter_{position}",
                         textbook_id,
-                        f"第 {position} 章",
+                        content.splitlines()[0],
                         position,
                         position,
                         content,
@@ -292,3 +307,73 @@ def test_full_graph_ignores_global_limit_and_records_fast_chapters(tmp_path: Pat
         object.__setattr__(settings, "database_url", original_database_url)
         object.__setattr__(settings, "graph_max_chapters", original_limit)
         object.__setattr__(settings, "graph_full_llm_min_chars", original_min_chars)
+        object.__setattr__(settings, "llm_base_url", original_llm_base_url)
+        object.__setattr__(settings, "llm_api_key", original_llm_api_key)
+
+
+def test_graph_task_fails_when_llm_failure_ratio_exceeds_threshold(tmp_path: Path, monkeypatch) -> None:
+    original_database_url = settings.database_url
+    original_llm_base_url = settings.llm_base_url
+    original_llm_api_key = settings.llm_api_key
+    original_workers = settings.graph_extract_workers
+    object.__setattr__(settings, "database_url", f"sqlite:///{tmp_path / 'app.db'}")
+    object.__setattr__(settings, "llm_base_url", "https://llm.example.test/v1")
+    object.__setattr__(settings, "llm_api_key", "test-key")
+    object.__setattr__(settings, "graph_extract_workers", 1)
+
+    class FailingExtractionAgent:
+        def extract(self, chapter: dict, textbook_id: str, workspace_id: str = "global"):
+            node = KnowledgeNode(
+                id=f"fallback_{chapter['position']}",
+                textbook_id=textbook_id,
+                chapter_id=chapter["id"],
+                name=f"降级概念{chapter['position']}",
+                definition="LLM 失败后的降级抽取",
+                category="相关概念",
+                page=chapter["page_start"],
+                source_excerpt=chapter["content"],
+                metadata={"fallback": True},
+            )
+            return [node], [], {"fallback": True, "error": "provider timeout", "fallback_reason": "provider timeout"}
+
+        def extract_fast(self, chapter: dict, textbook_id: str):
+            return [], []
+
+    monkeypatch.setattr(graph_service, "KnowledgeExtractionAgent", FailingExtractionAgent)
+    try:
+        init_db()
+        textbook_id = new_id("book")
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO textbooks
+                (id, filename, title, format, size_bytes, total_pages, total_chars, status, created_at)
+                VALUES (?, 'sample.md', 'sample', 'md', 10, 1, 900, 'completed', '2026-05-18T00:00:00Z')
+                """,
+                (textbook_id,),
+            )
+            for position in range(1, 4):
+                conn.execute(
+                    """
+                    INSERT INTO chapters (id, textbook_id, title, page_start, page_end, content, char_count, position)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        f"chapter_{position}",
+                        textbook_id,
+                        f"第 {position} 章",
+                        position,
+                        position,
+                        "教学正文" * 100,
+                        400,
+                        position,
+                    ),
+                )
+
+        with pytest.raises(RuntimeError, match="LLM extraction failed"):
+            build_graph(textbook_id, max_chapters=3)
+    finally:
+        object.__setattr__(settings, "database_url", original_database_url)
+        object.__setattr__(settings, "llm_base_url", original_llm_base_url)
+        object.__setattr__(settings, "llm_api_key", original_llm_api_key)
+        object.__setattr__(settings, "graph_extract_workers", original_workers)

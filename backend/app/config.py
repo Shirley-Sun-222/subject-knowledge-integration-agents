@@ -43,6 +43,9 @@ class Settings:
     pdf_text_extract_workers: int = int(os.getenv("PDF_TEXT_EXTRACT_WORKERS", "6"))
     pdf_ocr_workers: int = int(os.getenv("PDF_OCR_WORKERS", "4"))
     parse_cache_enabled: bool = os.getenv("PARSE_CACHE_ENABLED", "1") == "1"
+    preview_parse_chapters: int = int(os.getenv("PREVIEW_PARSE_CHAPTERS", "3"))
+    preview_parse_pages_per_chapter: int = int(os.getenv("PREVIEW_PARSE_PAGES_PER_CHAPTER", "3"))
+    preview_ocr_max_pages: int = int(os.getenv("PREVIEW_OCR_MAX_PAGES", "9"))
     graph_max_chapters: int = int(os.getenv("GRAPH_MAX_CHAPTERS", "30"))
     graph_extract_workers: int = int(os.getenv("GRAPH_EXTRACT_WORKERS", "2"))
     graph_full_llm_min_chars: int = int(os.getenv("GRAPH_FULL_LLM_MIN_CHARS", "900"))

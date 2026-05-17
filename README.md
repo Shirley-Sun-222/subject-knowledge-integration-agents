@@ -5,12 +5,13 @@
 ## 项目概览
 
 - 多格式教材上传与解析：PDF、Markdown、TXT、DOCX
-- 优先使用 PDF TOC/书签切章，缺失时回退正则识别
-- 并行原生文本抽取 + 并行 OCR，加速大 PDF 解析
+- 双阶段 PDF 解析：先用 TOC/书签和少量正文生成预览，后台继续全量解析
+- 优先使用 PDF TOC/书签切顶层教学章，缺失时回退正则识别
+- 并行原生文本抽取 + 受页数预算限制的并行 OCR，加速大 PDF 解析
 - 相同教材按文件哈希复用解析结果，减少重复等待
-- 单本教材知识图谱构建与可视化
+- LLM 优先的单本教材知识图谱构建与可视化；未配置 LLM 时允许生成低质量关键词图谱并显著警示
 - 跨教材知识点对齐、整合与压缩决策
-- 带引用的 RAG 问答与领域外拒答
+- 带引用的 RAG 问答与领域外拒答；RAG 索引只基于全量解析完成的教材建立
 - 教师反馈修订整合方案
 - Markdown 报告导出与 P2 技术报告实验资产
 
@@ -50,9 +51,30 @@ npm run dev
 - 官方教材放在本地 `textbooks/` 目录，仅用于本地实验与报告撰写，不提交到 GitHub。
 - P2 医学 benchmark 题集位于 `scripts/benchmark_sets/medical_official_questions.json`。
 - P2 实验脚本为 `scripts/run_p2_rag_experiments.py`，会把原始结果写到本地 `data/generated/p2-rag-official/`。
+- PDF 解析阶段语义已区分：
+  - `预览解析`：默认抽取前 3 个教学章、每章最多 3 页，OCR 总页数最多 9 页，用于公网快速可预览
+  - `全量解析`：后台处理整本教材，OCR 仍受 `OCR_MAX_PAGES` 限制，避免扫描版全书无上限 OCR
 - 图谱模式语义已区分：
-  - `预览图谱`：允许按章节数截断，优先快速反馈
-  - `全量图谱`：明确忽略 `GRAPH_MAX_CHAPTERS`，处理全部章节
+  - `预览图谱`：预览可用后即可构建，前 3 章优先尝试 LLM
+  - `全量图谱`：必须等待全量解析完成，明显非教学章节会跳过 LLM，其余章节优先尝试 LLM
+- 图谱质量语义已区分：
+  - 已配置 LLM：每章最多重试 1 次，失败比例超过 30% 会标记任务失败
+  - 未配置 LLM：仍允许快速构建，但 API metrics 和页面会显示“未配置 LLM，当前为低质量关键词图谱”
+
+## 关键配置
+
+```env
+LLM_BASE_URL=https://api.openai.com/v1
+LLM_API_KEY=
+LLM_MODEL=gpt-4o-mini
+OCR_MAX_PAGES=120
+PREVIEW_PARSE_CHAPTERS=3
+PREVIEW_PARSE_PAGES_PER_CHAPTER=3
+PREVIEW_OCR_MAX_PAGES=9
+GRAPH_MAX_CHAPTERS=30
+```
+
+前端会话级 LLM 配置优先于全局环境变量；后端通过 `resolve_config(workspace_id)` 判断是否可用，而不是只读取全局环境变量。部署到 ModelScope 等公网低配环境时，建议保留默认预览预算，并按机器能力调低 `OCR_MAX_PAGES`。
 
 ## 隐私与数据安全
 

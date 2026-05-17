@@ -23,6 +23,18 @@ def _task_from_row(row) -> dict[str, Any] | None:
     return task
 
 
+def _textbook_from_row(row) -> dict[str, Any]:
+    textbook = row_to_dict(row)
+    textbook["preview_ready"] = bool(textbook.get("preview_ready", True))
+    textbook["full_ready"] = bool(textbook.get("full_ready", True))
+    textbook["graph_stale_after_full_parse"] = bool(textbook.get("graph_stale_after_full_parse", False))
+    textbook.setdefault("parse_stage", "full")
+    textbook.setdefault("parse_scope", "full")
+    textbook.setdefault("graph_scope", "full")
+    textbook.setdefault("full_parse_error", None)
+    return textbook
+
+
 def _workspace_cutoff() -> str:
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=settings.session_workspace_ttl_seconds)
     return cutoff.isoformat()
@@ -145,19 +157,22 @@ class RuntimeStateStore:
         with connect() as conn:
             conn.execute(
                 """
-                INSERT INTO textbooks (id, workspace_id, filename, title, format, file_hash, size_bytes, total_pages, total_chars, status, error, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 'parsing', NULL, ?)
+                INSERT INTO textbooks
+                (id, workspace_id, filename, title, format, file_hash, size_bytes, total_pages, total_chars, status, error,
+                 parse_stage, preview_ready, full_ready, parse_scope, full_parse_error, graph_scope, graph_stale_after_full_parse, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 'parsing', NULL, 'pending', 0, 0, 'none', NULL, 'none', 0, ?)
                 """,
                 (textbook_id, workspace_id, filename, filename.rsplit(".", 1)[0], format_name, file_hash, size_bytes, created_at),
             )
         return self.get_textbook(workspace_id, textbook_id)
 
-    def complete_textbook_parse(self, workspace_id: str, textbook_id: str, parsed: dict[str, Any]) -> dict[str, Any]:
+    def complete_textbook_preview_parse(self, workspace_id: str, textbook_id: str, parsed: dict[str, Any]) -> dict[str, Any]:
         with connect() as conn:
             conn.execute(
                 """
                 UPDATE textbooks
-                SET title = ?, format = ?, total_pages = ?, total_chars = ?, status = 'completed', error = NULL
+                SET title = ?, format = ?, total_pages = ?, total_chars = ?, status = 'preview_ready', error = NULL,
+                    parse_stage = 'preview', preview_ready = 1, full_ready = 0, parse_scope = 'preview', full_parse_error = NULL
                 WHERE workspace_id = ? AND id = ?
                 """,
                 (parsed["title"], parsed["format"], parsed["total_pages"], parsed["total_chars"], workspace_id, textbook_id),
@@ -186,9 +201,111 @@ class RuntimeStateStore:
                 )
         return self.get_textbook(workspace_id, textbook_id)
 
+    def complete_textbook_parse(self, workspace_id: str, textbook_id: str, parsed: dict[str, Any]) -> dict[str, Any]:
+        preserved_graph = self._preserve_existing_graph(workspace_id, textbook_id)
+        with connect() as conn:
+            conn.execute(
+                """
+                UPDATE textbooks
+                SET title = ?, format = ?, total_pages = ?, total_chars = ?, status = 'completed', error = NULL,
+                    parse_stage = 'full', preview_ready = 1, full_ready = 1, parse_scope = 'full', full_parse_error = NULL,
+                    graph_stale_after_full_parse = CASE WHEN ? THEN 1 ELSE graph_stale_after_full_parse END
+                WHERE workspace_id = ? AND id = ?
+                """,
+                (parsed["title"], parsed["format"], parsed["total_pages"], parsed["total_chars"], bool(preserved_graph), workspace_id, textbook_id),
+            )
+            conn.execute("DELETE FROM chunks WHERE workspace_id = ? AND textbook_id = ?", (workspace_id, textbook_id))
+            conn.execute("DELETE FROM rag_index_entries WHERE workspace_id = ? AND textbook_id = ?", (workspace_id, textbook_id))
+            conn.execute("DELETE FROM knowledge_edges WHERE workspace_id = ? AND textbook_id = ?", (workspace_id, textbook_id))
+            conn.execute("DELETE FROM knowledge_nodes WHERE workspace_id = ? AND textbook_id = ?", (workspace_id, textbook_id))
+            conn.execute("DELETE FROM graph_cache_entries WHERE workspace_id = ? AND textbook_id = ?", (workspace_id, textbook_id))
+            conn.execute("DELETE FROM chapters WHERE workspace_id = ? AND textbook_id = ?", (workspace_id, textbook_id))
+            new_chapter_ids: dict[int, str] = {}
+            first_chapter_id: str | None = None
+            for position, chapter in enumerate(parsed["chapters"], start=1):
+                chapter_id = new_id("ch")
+                if first_chapter_id is None:
+                    first_chapter_id = chapter_id
+                new_chapter_ids[position] = chapter_id
+                conn.execute(
+                    """
+                    INSERT INTO chapters (id, workspace_id, textbook_id, title, page_start, page_end, content, char_count, position)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        chapter_id,
+                        workspace_id,
+                        textbook_id,
+                        chapter["title"],
+                        chapter["page_start"],
+                        chapter["page_end"],
+                        chapter["content"],
+                        chapter["char_count"],
+                        position,
+                    ),
+                )
+            if preserved_graph and first_chapter_id:
+                for node in preserved_graph["nodes"]:
+                    metadata = json_loads(node.get("metadata"), {})
+                    metadata["stale_after_full_parse"] = True
+                    chapter_id = new_chapter_ids.get(preserved_graph["chapter_positions"].get(node["chapter_id"], 1), first_chapter_id)
+                    conn.execute(
+                        """
+                        INSERT INTO knowledge_nodes
+                        (id, workspace_id, textbook_id, chapter_id, name, definition, category, page, source_excerpt, frequency, metadata)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            node["id"],
+                            workspace_id,
+                            node["textbook_id"],
+                            chapter_id,
+                            node["name"],
+                            node["definition"],
+                            node["category"],
+                            node["page"],
+                            node["source_excerpt"],
+                            node["frequency"],
+                            json_dumps(metadata),
+                        ),
+                    )
+                for edge in preserved_graph["edges"]:
+                    conn.execute(
+                        """
+                        INSERT INTO knowledge_edges (id, workspace_id, textbook_id, source, target, relation_type, description)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            edge["id"],
+                            workspace_id,
+                            edge["textbook_id"],
+                            edge["source"],
+                            edge["target"],
+                            edge["relation_type"],
+                            edge["description"],
+                        ),
+                    )
+        return self.get_textbook(workspace_id, textbook_id)
+
     def fail_textbook_parse(self, workspace_id: str, textbook_id: str, error_summary: str) -> dict[str, Any]:
         with connect() as conn:
-            conn.execute("UPDATE textbooks SET status = 'failed', error = ? WHERE workspace_id = ? AND id = ?", (error_summary, workspace_id, textbook_id))
+            conn.execute("UPDATE textbooks SET status = 'failed', error = ?, parse_stage = 'failed' WHERE workspace_id = ? AND id = ?", (error_summary, workspace_id, textbook_id))
+        return self.get_textbook(workspace_id, textbook_id)
+
+    def fail_textbook_full_parse(self, workspace_id: str, textbook_id: str, error_summary: str) -> dict[str, Any]:
+        with connect() as conn:
+            conn.execute(
+                """
+                UPDATE textbooks
+                SET status = CASE WHEN preview_ready = 1 THEN 'full_failed' ELSE 'failed' END,
+                    parse_stage = 'full_failed',
+                    full_ready = 0,
+                    full_parse_error = ?,
+                    error = CASE WHEN preview_ready = 1 THEN error ELSE ? END
+                WHERE workspace_id = ? AND id = ?
+                """,
+                (error_summary, error_summary, workspace_id, textbook_id),
+            )
         return self.get_textbook(workspace_id, textbook_id)
 
     def get_parsed_textbook_cache(self, file_hash: str) -> dict[str, Any] | None:
@@ -227,6 +344,33 @@ class RuntimeStateStore:
                 ),
             )
 
+    def _preserve_existing_graph(self, workspace_id: str, textbook_id: str) -> dict[str, Any] | None:
+        with connect() as conn:
+            nodes = [
+                row_to_dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM knowledge_nodes WHERE workspace_id = ? AND textbook_id = ?",
+                    (workspace_id, textbook_id),
+                )
+            ]
+            if not nodes:
+                return None
+            edges = [
+                row_to_dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM knowledge_edges WHERE workspace_id = ? AND textbook_id = ?",
+                    (workspace_id, textbook_id),
+                )
+            ]
+            chapters = {
+                row["id"]: int(row["position"])
+                for row in conn.execute(
+                    "SELECT id, position FROM chapters WHERE workspace_id = ? AND textbook_id = ?",
+                    (workspace_id, textbook_id),
+                )
+            }
+        return {"nodes": nodes, "edges": edges, "chapter_positions": chapters}
+
     def delete_textbook(self, workspace_id: str, textbook_id: str) -> None:
         with connect() as conn:
             textbook = conn.execute("SELECT id, format FROM textbooks WHERE workspace_id = ? AND id = ?", (workspace_id, textbook_id)).fetchone()
@@ -252,7 +396,7 @@ class RuntimeStateStore:
             row = conn.execute("SELECT * FROM textbooks WHERE workspace_id = ? AND id = ?", (workspace_id, textbook_id)).fetchone()
             if row is None:
                 raise KeyError(textbook_id)
-            textbook = row_to_dict(row)
+            textbook = _textbook_from_row(row)
             textbook["chapters"] = [
                 row_to_dict(item)
                 for item in conn.execute("SELECT * FROM chapters WHERE workspace_id = ? AND textbook_id = ? ORDER BY position", (workspace_id, textbook_id))
@@ -268,11 +412,11 @@ class RuntimeStateStore:
             row = conn.execute("SELECT * FROM textbooks WHERE workspace_id = ? AND id = ?", (workspace_id, textbook_id)).fetchone()
             if row is None:
                 raise KeyError(textbook_id)
-            return row_to_dict(row)
+            return _textbook_from_row(row)
 
     def list_textbooks(self, workspace_id: str) -> list[dict[str, Any]]:
         with connect() as conn:
-            textbooks = [row_to_dict(row) for row in conn.execute("SELECT * FROM textbooks WHERE workspace_id = ? ORDER BY created_at DESC", (workspace_id,))]
+            textbooks = [_textbook_from_row(row) for row in conn.execute("SELECT * FROM textbooks WHERE workspace_id = ? ORDER BY created_at DESC", (workspace_id,))]
             for textbook in textbooks:
                 chapter_count = conn.execute("SELECT COUNT(*) AS count FROM chapters WHERE workspace_id = ? AND textbook_id = ?", (workspace_id, textbook["id"])).fetchone()
                 node_count = conn.execute("SELECT COUNT(*) AS count FROM knowledge_nodes WHERE workspace_id = ? AND textbook_id = ?", (workspace_id, textbook["id"])).fetchone()
@@ -344,9 +488,19 @@ class RuntimeStateStore:
         *,
         cache_key: str,
         chapter_limit: int,
+        graph_scope: str = "full",
+        stale_after_full_parse: bool = False,
     ) -> None:
         self.replace_graph(workspace_id, textbook_id, nodes, edges)
         with connect() as conn:
+            conn.execute(
+                """
+                UPDATE textbooks
+                SET graph_scope = ?, graph_stale_after_full_parse = ?
+                WHERE workspace_id = ? AND id = ?
+                """,
+                (graph_scope, int(stale_after_full_parse), workspace_id, textbook_id),
+            )
             conn.execute(
                 """
                 INSERT INTO graph_cache_entries (textbook_id, workspace_id, cache_key, chapter_limit, node_count, edge_count, built_at)
@@ -386,9 +540,9 @@ class RuntimeStateStore:
             for node in nodes:
                 node["metadata"] = json_loads(node.get("metadata"), {})
             edges = [row_to_dict(row) for row in conn.execute("SELECT * FROM knowledge_edges WHERE workspace_id = ? AND textbook_id = ?", (workspace_id, textbook_id))]
-            textbook = conn.execute("SELECT id, title, filename FROM textbooks WHERE workspace_id = ? AND id = ?", (workspace_id, textbook_id)).fetchone()
+            textbook = conn.execute("SELECT * FROM textbooks WHERE workspace_id = ? AND id = ?", (workspace_id, textbook_id)).fetchone()
             return {
-                "textbook": row_to_dict(textbook) if textbook else None,
+                "textbook": _textbook_from_row(textbook) if textbook else None,
                 "nodes": nodes,
                 "edges": edges,
             }
@@ -586,6 +740,22 @@ class RuntimeStateStore:
         with connect() as conn:
             return int(conn.execute("SELECT COUNT(*) AS count FROM textbooks WHERE workspace_id = ? AND status = 'completed'", (workspace_id,)).fetchone()["count"])
 
+    def all_textbooks_full_ready(self, workspace_id: str) -> bool:
+        with connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN full_ready = 1 THEN 1 ELSE 0 END) AS ready
+                FROM textbooks
+                WHERE workspace_id = ? AND preview_ready = 1
+                """,
+                (workspace_id,),
+            ).fetchone()
+        total = int(row["total"] or 0)
+        ready = int(row["ready"] or 0)
+        return total > 0 and ready == total
+
     def list_rag_index_entries(self, workspace_id: str) -> dict[str, dict[str, Any]]:
         with connect() as conn:
             rows = conn.execute("SELECT * FROM rag_index_entries WHERE workspace_id = ?", (workspace_id,)).fetchall()
@@ -636,7 +806,7 @@ class RuntimeStateStore:
 
     def collect_report_data(self, workspace_id: str) -> dict[str, Any]:
         with connect() as conn:
-            textbooks = [row_to_dict(row) for row in conn.execute("SELECT * FROM textbooks WHERE workspace_id = ? ORDER BY created_at", (workspace_id,))]
+            textbooks = [_textbook_from_row(row) for row in conn.execute("SELECT * FROM textbooks WHERE workspace_id = ? ORDER BY created_at", (workspace_id,))]
             nodes = {row["id"]: row_to_dict(row) for row in conn.execute("SELECT * FROM knowledge_nodes WHERE workspace_id = ?", (workspace_id,))}
             node_count = conn.execute("SELECT COUNT(*) AS count FROM knowledge_nodes WHERE workspace_id = ?", (workspace_id,)).fetchone()["count"]
             edge_count = conn.execute("SELECT COUNT(*) AS count FROM knowledge_edges WHERE workspace_id = ?", (workspace_id,)).fetchone()["count"]

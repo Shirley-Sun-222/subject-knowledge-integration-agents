@@ -8,7 +8,7 @@ from ..config import settings
 from ..runtime.files import runtime_files
 from ..runtime.store import state_store
 from ..runtime.tasks import TaskContext, task_runner
-from ..services.parser import ParseError, parse_textbook
+from ..services.parser import ParseError, parse_textbook, parse_textbook_preview
 from ..utils.ids import new_id
 
 
@@ -22,12 +22,26 @@ async def save_upload(file: UploadFile, workspace_id: str = "global") -> dict:
 
 
 def enqueue_parse_textbook(textbook_id: str, workspace_id: str = "global") -> tuple[dict, bool]:
+    return enqueue_preview_parse_textbook(textbook_id, workspace_id=workspace_id)
+
+
+def enqueue_preview_parse_textbook(textbook_id: str, workspace_id: str = "global") -> tuple[dict, bool]:
     return task_runner.enqueue(
         workspace_id,
-        "parse_textbook",
+        "preview_parse_textbook",
         "textbook",
         textbook_id,
-        lambda context: _parse_textbook_task(context, textbook_id, workspace_id=workspace_id),
+        lambda context: _preview_parse_textbook_task(context, textbook_id, workspace_id=workspace_id),
+    )
+
+
+def enqueue_full_parse_textbook(textbook_id: str, workspace_id: str = "global") -> tuple[dict, bool]:
+    return task_runner.enqueue(
+        workspace_id,
+        "full_parse_textbook",
+        "textbook",
+        textbook_id,
+        lambda context: _full_parse_textbook_task(context, textbook_id, workspace_id=workspace_id),
     )
 
 
@@ -49,6 +63,29 @@ def parse_stored_textbook(textbook_id: str, workspace_id: str = "global") -> dic
 
 
 def parse_stored_textbook_with_progress(textbook_id: str, progress: TaskContext | None = None, workspace_id: str = "global") -> dict:
+    return parse_stored_textbook_full_with_progress(textbook_id, progress=progress, workspace_id=workspace_id)
+
+
+def parse_stored_textbook_preview_with_progress(textbook_id: str, progress: TaskContext | None = None, workspace_id: str = "global") -> dict:
+    textbook = state_store.get_textbook_record(workspace_id, textbook_id)
+    destination = runtime_files.stored_textbook_path(workspace_id, textbook_id, textbook["format"])
+    try:
+        parsed = parse_textbook_preview(
+            destination,
+            textbook["filename"],
+            progress=(lambda phase, current, total: progress.progress(phase=phase, progress_current=current, progress_total=total)) if progress else None,
+        )
+        if parsed.get("parse_scope") == "full":
+            return state_store.complete_textbook_parse(workspace_id, textbook_id, parsed)
+        return state_store.complete_textbook_preview_parse(workspace_id, textbook_id, parsed)
+    except Exception as exc:
+        error_message = str(exc)
+        if isinstance(exc, ParseError):
+            error_message = str(exc)
+        return state_store.fail_textbook_parse(workspace_id, textbook_id, error_message)
+
+
+def parse_stored_textbook_full_with_progress(textbook_id: str, progress: TaskContext | None = None, workspace_id: str = "global") -> dict:
     textbook = state_store.get_textbook_record(workspace_id, textbook_id)
     destination = runtime_files.stored_textbook_path(workspace_id, textbook_id, textbook["format"])
     try:
@@ -79,20 +116,39 @@ def parse_stored_textbook_with_progress(textbook_id: str, progress: TaskContext 
         error_message = str(exc)
         if isinstance(exc, ParseError):
             error_message = str(exc)
-        return state_store.fail_textbook_parse(workspace_id, textbook_id, error_message)
+        return state_store.fail_textbook_full_parse(workspace_id, textbook_id, error_message)
 
 
-def _parse_textbook_task(context: TaskContext, textbook_id: str, workspace_id: str = "global") -> dict:
-    context.start("parsing_textbook", progress_total=1)
-    textbook = parse_stored_textbook_with_progress(textbook_id, progress=context, workspace_id=workspace_id)
-    if textbook["status"] != "completed":
+def _preview_parse_textbook_task(context: TaskContext, textbook_id: str, workspace_id: str = "global") -> dict:
+    context.start("preview_parsing_textbook", progress_total=1)
+    textbook = parse_stored_textbook_preview_with_progress(textbook_id, progress=context, workspace_id=workspace_id)
+    if not textbook.get("preview_ready"):
         raise RuntimeError(textbook.get("error") or "Failed to parse textbook")
-    context.progress(phase="writing_textbook", progress_current=1, progress_total=1)
+    context.progress(phase="writing_preview_textbook", progress_current=1, progress_total=1)
+    if not textbook.get("full_ready"):
+        enqueue_full_parse_textbook(textbook_id, workspace_id=workspace_id)
     return {
         "result_ref": textbook_id,
         "phase": "completed",
         "truncated": False,
     }
+
+
+def _full_parse_textbook_task(context: TaskContext, textbook_id: str, workspace_id: str = "global") -> dict:
+    context.start("full_parsing_textbook", progress_total=1)
+    textbook = parse_stored_textbook_full_with_progress(textbook_id, progress=context, workspace_id=workspace_id)
+    if not textbook.get("full_ready"):
+        raise RuntimeError(textbook.get("full_parse_error") or textbook.get("error") or "Failed to parse full textbook")
+    context.progress(phase="writing_full_textbook", progress_current=1, progress_total=1)
+    return {
+        "result_ref": textbook_id,
+        "phase": "completed",
+        "truncated": False,
+    }
+
+
+def _parse_textbook_task(context: TaskContext, textbook_id: str, workspace_id: str = "global") -> dict:
+    return _full_parse_textbook_task(context, textbook_id, workspace_id=workspace_id)
 
 
 def get_textbook(textbook_id: str, workspace_id: str = "global") -> dict:

@@ -10,7 +10,7 @@ from backend.app.agents.extraction import KnowledgeExtractionAgent
 from backend.app.config import settings
 from backend.app.services import parser
 from backend.app.services.llm import LlmResult, llm_client
-from backend.app.services.parser import parse_textbook
+from backend.app.services.parser import parse_textbook, parse_textbook_preview
 from backend.app.utils.text import chunk_text, split_chapters, tokenize
 
 
@@ -168,7 +168,7 @@ def test_parse_pdf_prefers_top_level_toc_chapters(tmp_path: Path) -> None:
     assert parsed["chapters"][1]["title"] == "第二章 免疫"
 
 
-def test_parse_pdf_scanned_mode_ocrs_entire_book(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_parse_pdf_scanned_mode_respects_ocr_max_pages(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fitz = pytest.importorskip("fitz")
     path = tmp_path / "scan-all.pdf"
     document = fitz.open()
@@ -178,12 +178,68 @@ def test_parse_pdf_scanned_mode_ocrs_entire_book(tmp_path: Path, monkeypatch: py
     document.close()
 
     calls: list[int] = []
-    monkeypatch.setattr(parser, "_ocr_pdf_page", lambda page: calls.append(page.number) or f"第 {page.number + 1} 页 OCR 文本")
+    monkeypatch.setattr(parser, "_ocr_pdf_page", lambda page: calls.append(page.number) or f"第 {page.number + 1} 页 OCR 文本，包含足够多的教材教学内容用于解析。")
+    original_ocr_max_pages = settings.ocr_max_pages
+    object.__setattr__(settings, "ocr_max_pages", 1)
 
-    parsed = parse_textbook(path, path.name)
+    try:
+        parsed = parse_textbook(path, path.name)
+    finally:
+        object.__setattr__(settings, "ocr_max_pages", original_ocr_max_pages)
 
     assert parsed["total_pages"] == 2
-    assert sorted(calls) == [0, 1]
+    assert sorted(calls) == [0]
+
+
+def test_parse_pdf_preview_limits_to_three_teaching_chapters_and_three_pages(tmp_path: Path) -> None:
+    fitz = pytest.importorskip("fitz")
+    path = tmp_path / "preview.pdf"
+    document = fitz.open()
+    toc = []
+    page_number = 1
+    for chapter in range(1, 5):
+        toc.append([1, f"第 {chapter} 章 教学章{chapter}", page_number])
+        for chapter_page in range(1, 5):
+            page = document.new_page()
+            page.insert_text((72, 72), f"第 {chapter} 章 第 {chapter_page} 页\n核心教学内容 {chapter}-{chapter_page}。")
+            page_number += 1
+    document.set_toc(toc)
+    document.save(path)
+    document.close()
+
+    parsed = parse_textbook_preview(path, path.name)
+
+    assert parsed["parse_scope"] == "preview"
+    assert len(parsed["chapters"]) == 3
+    assert all(chapter["page_end"] - chapter["page_start"] <= 2 for chapter in parsed["chapters"])
+    assert "核心教学内容 1-4" not in parsed["chapters"][0]["content"]
+    assert parsed["chapters"][0]["title"] == "第 1 章 教学章1"
+
+
+def test_parse_pdf_preview_scanned_ocr_budget_is_nine_pages(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fitz = pytest.importorskip("fitz")
+    path = tmp_path / "preview-scan.pdf"
+    document = fitz.open()
+    toc = []
+    page_number = 1
+    for chapter in range(1, 5):
+        toc.append([1, f"第 {chapter} 章 扫描章{chapter}", page_number])
+        for _ in range(3):
+            document.new_page()
+            page_number += 1
+    document.set_toc(toc)
+    document.save(path)
+    document.close()
+
+    calls: list[int] = []
+    monkeypatch.setattr(parser, "_ocr_pdf_page", lambda page: calls.append(page.number) or f"第 {page.number + 1} 页 OCR 教学内容")
+
+    parsed = parse_textbook_preview(path, path.name)
+
+    assert parsed["parse_scope"] == "preview"
+    assert len(parsed["chapters"]) == 3
+    assert len(calls) == 9
+    assert max(calls) == 8
 
 
 if __name__ == "__main__":

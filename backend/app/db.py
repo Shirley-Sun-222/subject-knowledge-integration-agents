@@ -65,6 +65,13 @@ def init_db() -> None:
                 total_chars INTEGER NOT NULL DEFAULT 0,
                 status TEXT NOT NULL,
                 error TEXT,
+                parse_stage TEXT NOT NULL DEFAULT 'full',
+                preview_ready INTEGER NOT NULL DEFAULT 1,
+                full_ready INTEGER NOT NULL DEFAULT 1,
+                parse_scope TEXT NOT NULL DEFAULT 'full',
+                full_parse_error TEXT,
+                graph_scope TEXT NOT NULL DEFAULT 'full',
+                graph_stale_after_full_parse INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL
             );
 
@@ -226,6 +233,7 @@ def init_db() -> None:
         )
         _ensure_workspace_columns(conn)
         _ensure_textbook_hash_column(conn)
+        _ensure_textbook_parse_columns(conn)
         _ensure_task_metadata_column(conn)
         _ensure_index_metadata_tables(conn)
 
@@ -277,6 +285,21 @@ def _ensure_index_metadata_tables(conn: sqlite3.Connection) -> None:
 def _ensure_textbook_hash_column(conn: sqlite3.Connection) -> None:
     if not _has_column(conn, "textbooks", "file_hash"):
         conn.execute("ALTER TABLE textbooks ADD COLUMN file_hash TEXT")
+
+
+def _ensure_textbook_parse_columns(conn: sqlite3.Connection) -> None:
+    columns = {
+        "parse_stage": "TEXT NOT NULL DEFAULT 'full'",
+        "preview_ready": "INTEGER NOT NULL DEFAULT 1",
+        "full_ready": "INTEGER NOT NULL DEFAULT 1",
+        "parse_scope": "TEXT NOT NULL DEFAULT 'full'",
+        "full_parse_error": "TEXT",
+        "graph_scope": "TEXT NOT NULL DEFAULT 'full'",
+        "graph_stale_after_full_parse": "INTEGER NOT NULL DEFAULT 0",
+    }
+    for column, definition in columns.items():
+        if not _has_column(conn, "textbooks", column):
+            conn.execute(f"ALTER TABLE textbooks ADD COLUMN {column} {definition}")
 
 
 def _ensure_task_metadata_column(conn: sqlite3.Connection) -> None:

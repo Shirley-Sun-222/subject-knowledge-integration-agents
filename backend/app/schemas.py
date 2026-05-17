@@ -6,7 +6,15 @@ from pydantic import BaseModel, Field, SecretStr
 
 
 TaskStatus = Literal["queued", "running", "succeeded", "failed"]
-TaskType = Literal["parse_textbook", "build_graph", "run_integration", "build_rag_index", "build_report_pdf"]
+TaskType = Literal[
+    "parse_textbook",
+    "preview_parse_textbook",
+    "full_parse_textbook",
+    "build_graph",
+    "run_integration",
+    "build_rag_index",
+    "build_report_pdf",
+]
 ResourceType = Literal["textbook", "system", "report"]
 
 
@@ -20,6 +28,13 @@ class Textbook(BaseModel):
     total_chars: int = 0
     status: str
     error: str | None = None
+    parse_stage: str = "full"
+    preview_ready: bool = True
+    full_ready: bool = True
+    parse_scope: str = "full"
+    full_parse_error: str | None = None
+    graph_scope: str = "full"
+    graph_stale_after_full_parse: bool = False
     created_at: str
 
 

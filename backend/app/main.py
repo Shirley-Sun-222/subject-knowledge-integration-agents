@@ -85,6 +85,12 @@ def build_graph(payload: dict, request: Request, response: Response) -> dict:
     mode = payload.get("mode", "preview")
     max_chapters = payload.get("max_chapters")
     if mode == "full":
+        try:
+            textbook = textbooks.get_textbook(textbook_id, workspace_id=workspace_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="textbook not found") from exc
+        if not textbook.get("full_ready"):
+            raise HTTPException(status_code=409, detail="Full graph construction requires full parsing to finish. Build a preview graph instead.")
         max_chapters = 0
     elif max_chapters is not None:
         try:
@@ -119,7 +125,10 @@ def get_integration(request: Request, response: Response) -> dict:
 @app.post("/api/rag/index", status_code=202)
 def build_rag_index(request: Request, response: Response) -> dict:
     workspace_id = _workspace(request, response)
-    task, _ = rag.enqueue_build_index(workspace_id=workspace_id)
+    try:
+        task, _ = rag.enqueue_build_index(workspace_id=workspace_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"task": _task_summary(task)}
 
 

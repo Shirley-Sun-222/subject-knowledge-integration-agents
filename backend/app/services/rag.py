@@ -40,6 +40,8 @@ GENERIC_QUERY_TERMS = {
 
 
 def enqueue_build_index(workspace_id: str = "global") -> tuple[dict, bool]:
+    if not state_store.all_textbooks_full_ready(workspace_id):
+        raise RuntimeError("RAG indexing requires all preview textbooks to finish full parsing.")
     is_fresh, chapter_count = state_store.rag_index_freshness(workspace_id)
     if is_fresh:
         task = state_store.create_finished_task(
@@ -72,6 +74,8 @@ def _build_index_task(context: TaskContext, workspace_id: str = "global") -> dic
 
 
 def build_index(progress: TaskContext | None = None, workspace_id: str = "global") -> dict:
+    if not state_store.all_textbooks_full_ready(workspace_id):
+        raise RuntimeError("RAG indexing requires all preview textbooks to finish full parsing.")
     chapters = state_store.list_all_chapters(workspace_id)
     existing_entries = state_store.list_rag_index_entries(workspace_id)
     active_chapter_ids = {chapter["id"] for chapter in chapters}

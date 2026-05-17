@@ -140,6 +140,8 @@ export function useTaskWorkflow(options: WorkflowOptions = {}) {
 export function taskLabel(task: TaskDetail | TaskSummary) {
   const typeLabel = {
     parse_textbook: "解析教材",
+    preview_parse_textbook: "预览解析",
+    full_parse_textbook: "全量解析",
     build_graph: "构建图谱",
     run_integration: "跨教材整合",
     build_rag_index: "建立 RAG 索引",
@@ -159,6 +161,7 @@ function nextPollingDelay(tasks: TaskDetail[]) {
   const pendingQueued = tasks.some((task) => task.status === "queued");
   const intensivePhase = tasks.some((task) =>
     ["parsing_textbook", "detecting_pdf_mode", "reading_pdf_pages", "ocr_pdf_pages", "extracting_graph", "chunking_textbooks"].includes(task.phase)
+    || ["preview_parsing_textbook", "full_parsing_textbook", "reading_pdf_preview_pages"].includes(task.phase)
   );
 
   if (pendingQueued || newestActivityAgeMs < 4_000) {

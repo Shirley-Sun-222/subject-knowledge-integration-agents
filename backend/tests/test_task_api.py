@@ -6,6 +6,7 @@ import sqlite3
 import time
 from pathlib import Path
 
+import pytest
 from fastapi import UploadFile
 from fastapi import Response
 from starlette.requests import Request
@@ -17,10 +18,12 @@ from backend.app import main
 from backend.app.runtime import store as store_module
 from backend.app.runtime.store import state_store
 from backend.app.runtime.tasks import TaskContext, task_runner
+from backend.app.schemas import KnowledgeNode
 from backend.app.services import graph as graph_service
 from backend.app.services import rag as rag_service
 from backend.app.services.embedding import embedding_service
 from backend.app.services.textbooks import import_textbook_file
+from backend.app.utils.ids import new_id
 
 WORKSPACE_ID = "ws_test"
 
@@ -96,6 +99,7 @@ def test_upload_api_enqueues_parse_task_and_completes(tmp_path: Path) -> None:
         payload = asyncio.run(main.upload_textbooks(_request(), _response(), [upload]))
 
         assert len(payload["uploads"]) == 1
+        assert payload["uploads"][0]["task"]["task_type"] == "preview_parse_textbook"
         task_id = payload["uploads"][0]["task"]["id"]
         textbook_id = payload["uploads"][0]["textbook"]["id"]
 
@@ -109,6 +113,9 @@ def test_upload_api_enqueues_parse_task_and_completes(tmp_path: Path) -> None:
         textbooks = main.list_textbooks(_request(), _response())["textbooks"]
         uploaded = next(item for item in textbooks if item["id"] == textbook_id)
         assert uploaded["status"] == "completed"
+        assert uploaded["preview_ready"] is True
+        assert uploaded["full_ready"] is True
+        assert uploaded["parse_scope"] == "full"
         assert uploaded["chapter_count"] >= 1
     finally:
         _restore_runtime_paths(originals)
@@ -149,6 +156,238 @@ def test_delete_textbook_removes_records_and_upload(tmp_path: Path) -> None:
         assert main.list_textbooks(_request(), _response())["textbooks"] == []
         assert not stored_path.exists()
     finally:
+        _restore_runtime_paths(originals)
+
+
+def test_pdf_upload_preview_parse_enqueues_full_parse_task(tmp_path: Path) -> None:
+    fitz = pytest.importorskip("fitz")
+    originals = _set_runtime_paths(tmp_path)
+    try:
+        main.startup()
+        pdf_path = tmp_path / "医学教材.pdf"
+        document = fitz.open()
+        toc = []
+        page_number = 1
+        for chapter in range(1, 5):
+            toc.append([1, f"第 {chapter} 章 教学章{chapter}", page_number])
+            for chapter_page in range(1, 4):
+                page = document.new_page()
+                page.insert_text((72, 72), f"第 {chapter} 章 第 {chapter_page} 页\n生理学教学内容 {chapter}-{chapter_page}。")
+                page_number += 1
+        document.set_toc(toc)
+        document.save(pdf_path)
+        document.close()
+
+        upload = UploadFile(file=io.BytesIO(pdf_path.read_bytes()), filename=pdf_path.name)
+        payload = asyncio.run(main.upload_textbooks(_request(), _response(), [upload]))
+        preview_task_id = payload["uploads"][0]["task"]["id"]
+        textbook_id = payload["uploads"][0]["textbook"]["id"]
+
+        preview_task = task_runner.wait_for(WORKSPACE_ID, preview_task_id)
+        assert preview_task["status"] == "succeeded"
+
+        textbooks = main.list_textbooks(_request(), _response())["textbooks"]
+        uploaded = next(item for item in textbooks if item["id"] == textbook_id)
+        assert uploaded["preview_ready"] is True
+        assert uploaded["parse_stage"] in {"preview", "full"}
+        assert uploaded["chapter_count"] <= 3 or uploaded["full_ready"] is True
+
+        full_tasks = main.list_tasks(_request(), _response(), task_type="full_parse_textbook")["tasks"]
+        assert any(task["resource_id"] == textbook_id for task in full_tasks)
+        for task in full_tasks:
+            if task["status"] in {"queued", "running"}:
+                task_runner.wait_for(WORKSPACE_ID, task["id"])
+    finally:
+        _restore_runtime_paths(originals)
+
+
+def test_rag_index_requires_full_ready_textbooks(tmp_path: Path) -> None:
+    originals = _set_runtime_paths(tmp_path)
+    try:
+        init_db()
+        state_store.ensure_workspace(WORKSPACE_ID)
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO textbooks
+                (id, workspace_id, filename, title, format, size_bytes, total_pages, total_chars, status, parse_stage, preview_ready, full_ready, parse_scope, created_at)
+                VALUES ('book-preview', ?, 'preview.pdf', 'preview', 'pdf', 10, 3, 300, 'preview_ready', 'preview', 1, 0, 'preview', '2026-05-18T00:00:00Z')
+                """,
+                (WORKSPACE_ID,),
+            )
+
+        try:
+            main.build_rag_index(_request(), _response())
+        except Exception as exc:
+            assert getattr(exc, "status_code", None) == 409
+        else:
+            raise AssertionError("RAG indexing should require full-ready textbooks")
+    finally:
+        _restore_runtime_paths(originals)
+
+
+def test_full_graph_api_requires_full_ready_textbook(tmp_path: Path) -> None:
+    originals = _set_runtime_paths(tmp_path)
+    try:
+        init_db()
+        state_store.ensure_workspace(WORKSPACE_ID)
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO textbooks
+                (id, workspace_id, filename, title, format, size_bytes, total_pages, total_chars, status, parse_stage, preview_ready, full_ready, parse_scope, created_at)
+                VALUES ('book-preview', ?, 'preview.pdf', 'preview', 'pdf', 10, 3, 300, 'preview_ready', 'preview', 1, 0, 'preview', '2026-05-18T00:00:00Z')
+                """,
+                (WORKSPACE_ID,),
+            )
+
+        try:
+            main.build_graph({"textbook_id": "book-preview", "mode": "full"}, _request(), _response())
+        except Exception as exc:
+            assert getattr(exc, "status_code", None) == 409
+        else:
+            raise AssertionError("Full graph construction should require full-ready textbooks")
+    finally:
+        _restore_runtime_paths(originals)
+
+
+def test_full_parse_preserves_preview_graph_as_stale(tmp_path: Path) -> None:
+    originals = _set_runtime_paths(tmp_path)
+    try:
+        init_db()
+        state_store.ensure_workspace(WORKSPACE_ID)
+        textbook_id = new_id("book")
+        chapter_id = new_id("ch")
+        node_id = new_id("node")
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO textbooks
+                (id, workspace_id, filename, title, format, size_bytes, total_pages, total_chars, status, parse_stage, preview_ready, full_ready, parse_scope, graph_scope, created_at)
+                VALUES (?, ?, 'preview.pdf', 'preview', 'pdf', 10, 3, 100, 'preview_ready', 'preview', 1, 0, 'preview', 'preview', '2026-05-18T00:00:00Z')
+                """,
+                (textbook_id, WORKSPACE_ID),
+            )
+            conn.execute(
+                """
+                INSERT INTO chapters (id, workspace_id, textbook_id, title, page_start, page_end, content, char_count, position)
+                VALUES (?, ?, ?, '第 1 章', 1, 3, '预览章节内容', 30, 1)
+                """,
+                (chapter_id, WORKSPACE_ID, textbook_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO knowledge_nodes
+                (id, workspace_id, textbook_id, chapter_id, name, definition, category, page, source_excerpt, frequency, metadata)
+                VALUES (?, ?, ?, ?, '预览概念', '定义', '核心概念', 1, '出处', 1, '{}')
+                """,
+                (node_id, WORKSPACE_ID, textbook_id, chapter_id),
+            )
+
+        state_store.complete_textbook_parse(
+            WORKSPACE_ID,
+            textbook_id,
+            {
+                "title": "preview",
+                "format": "pdf",
+                "total_pages": 6,
+                "total_chars": 300,
+                "chapters": [
+                    {
+                        "title": "第 1 章",
+                        "page_start": 1,
+                        "page_end": 6,
+                        "content": "全量章节内容" * 20,
+                        "char_count": 120,
+                    }
+                ],
+            },
+        )
+
+        graph = state_store.get_graph(WORKSPACE_ID, textbook_id)
+        textbook = state_store.get_textbook_record(WORKSPACE_ID, textbook_id)
+        assert graph["nodes"]
+        assert graph["nodes"][0]["metadata"]["stale_after_full_parse"] is True
+        assert graph["textbook"]["graph_scope"] == "preview"
+        assert graph["textbook"]["graph_stale_after_full_parse"] is True
+        assert textbook["full_ready"] is True
+        assert textbook["graph_stale_after_full_parse"] is True
+    finally:
+        _restore_runtime_paths(originals)
+
+
+def test_preview_graph_race_after_full_parse_remaps_stale_nodes(tmp_path: Path, monkeypatch) -> None:
+    originals = _set_runtime_paths(tmp_path)
+    original_workers = settings.graph_extract_workers
+    try:
+        object.__setattr__(settings, "graph_extract_workers", 1)
+        init_db()
+        state_store.ensure_workspace(WORKSPACE_ID)
+        textbook_id = new_id("book")
+        preview_chapter_id = new_id("ch")
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO textbooks
+                (id, workspace_id, filename, title, format, size_bytes, total_pages, total_chars, status, parse_stage, preview_ready, full_ready, parse_scope, graph_scope, created_at)
+                VALUES (?, ?, 'preview.pdf', 'preview', 'pdf', 10, 3, 100, 'preview_ready', 'preview', 1, 0, 'preview', 'preview', '2026-05-18T00:00:00Z')
+                """,
+                (textbook_id, WORKSPACE_ID),
+            )
+            conn.execute(
+                """
+                INSERT INTO chapters (id, workspace_id, textbook_id, title, page_start, page_end, content, char_count, position)
+                VALUES (?, ?, ?, '第 1 章', 1, 3, '预览章节内容预览章节内容预览章节内容', 60, 1)
+                """,
+                (preview_chapter_id, WORKSPACE_ID, textbook_id),
+            )
+
+        class RaceExtractionAgent:
+            def extract_fast(self, chapter: dict, textbook_id: str):
+                state_store.complete_textbook_parse(
+                    WORKSPACE_ID,
+                    textbook_id,
+                    {
+                        "title": "preview",
+                        "format": "pdf",
+                        "total_pages": 6,
+                        "total_chars": 300,
+                        "chapters": [
+                            {
+                                "title": "第 1 章",
+                                "page_start": 1,
+                                "page_end": 6,
+                                "content": "全量章节内容" * 20,
+                                "char_count": 120,
+                            }
+                        ],
+                    },
+                )
+                return [
+                    KnowledgeNode(
+                        id=new_id("node"),
+                        textbook_id=textbook_id,
+                        chapter_id=chapter["id"],
+                        name="预览概念",
+                        definition="定义",
+                        category="核心概念",
+                        page=1,
+                        source_excerpt="出处",
+                    )
+                ], []
+
+        monkeypatch.setattr(graph_service, "KnowledgeExtractionAgent", RaceExtractionAgent)
+
+        graph = graph_service.build_graph(textbook_id, max_chapters=1, workspace_id=WORKSPACE_ID)
+
+        assert graph["nodes"]
+        assert graph["nodes"][0]["chapter_id"] != preview_chapter_id
+        assert graph["nodes"][0]["metadata"]["stale_after_full_parse"] is True
+        assert graph["textbook"]["graph_scope"] == "preview"
+        assert graph["textbook"]["graph_stale_after_full_parse"] is True
+        assert graph["metrics"]["stale_after_full_parse"] is True
+    finally:
+        object.__setattr__(settings, "graph_extract_workers", original_workers)
         _restore_runtime_paths(originals)
 
 

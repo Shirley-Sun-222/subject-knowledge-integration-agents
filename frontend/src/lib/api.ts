@@ -8,6 +8,13 @@ export type Textbook = {
   total_chars: number;
   status: string;
   error?: string | null;
+  parse_stage?: string;
+  preview_ready?: boolean;
+  full_ready?: boolean;
+  parse_scope?: string;
+  full_parse_error?: string | null;
+  graph_scope?: string;
+  graph_stale_after_full_parse?: boolean;
   chapters?: Chapter[];
   chapter_count?: number;
   graph_node_count?: number;
@@ -16,7 +23,7 @@ export type Textbook = {
 
 export type TaskSummary = {
   id: string;
-  task_type: "parse_textbook" | "build_graph" | "run_integration" | "build_rag_index" | "build_report_pdf";
+  task_type: "parse_textbook" | "preview_parse_textbook" | "full_parse_textbook" | "build_graph" | "run_integration" | "build_rag_index" | "build_report_pdf";
   resource_type: "textbook" | "system" | "report";
   resource_id: string;
   status: "queued" | "running" | "succeeded" | "failed";
@@ -110,6 +117,13 @@ export type GraphResult = {
     llm_chapters?: number;
     fast_chapters?: number;
     llm_configured?: boolean;
+    llm_config_source?: "session" | "global" | "none";
+    llm_attempted_chapters?: number;
+    llm_succeeded_chapters?: number;
+    low_quality_without_llm?: boolean;
+    fallback_reasons?: string[];
+    graph_scope?: "preview" | "full";
+    stale_after_full_parse?: boolean;
   };
 };
 

@@ -25,6 +25,12 @@ type GraphView = {
     llm_chapters?: number;
     fast_chapters?: number;
     llm_configured?: boolean;
+    llm_config_source?: "session" | "global" | "none";
+    llm_attempted_chapters?: number;
+    llm_succeeded_chapters?: number;
+    low_quality_without_llm?: boolean;
+    graph_scope?: "preview" | "full";
+    stale_after_full_parse?: boolean;
   };
 };
 
@@ -101,6 +107,9 @@ function App() {
       if (task.task_type === "parse_textbook") {
         return;
       }
+      if (task.task_type === "preview_parse_textbook" || task.task_type === "full_parse_textbook") {
+        return;
+      }
       if (task.task_type === "build_graph") {
         const graphResult = await api.graph(task.resource_id);
         const textbook = snapshot.textbooks.find((book) => book.id === task.resource_id);
@@ -115,7 +124,14 @@ function App() {
             total_chapters: task.progress_total,
             truncated: task.truncated,
             llm_chapters: Number(task.metadata?.llm_chapters || 0),
-            fast_chapters: Number(task.metadata?.fast_chapters || 0)
+            fast_chapters: Number(task.metadata?.fast_chapters || 0),
+            llm_configured: Boolean(task.metadata?.llm_configured),
+            llm_config_source: String(task.metadata?.llm_config_source || "none") as "session" | "global" | "none",
+            llm_attempted_chapters: Number(task.metadata?.llm_attempted_chapters || 0),
+            llm_succeeded_chapters: Number(task.metadata?.llm_succeeded_chapters || 0),
+            low_quality_without_llm: Boolean(task.metadata?.low_quality_without_llm),
+            graph_scope: String(task.metadata?.graph_scope || "preview") as "preview" | "full",
+            stale_after_full_parse: Boolean(task.metadata?.stale_after_full_parse)
           }
         });
         return;
@@ -229,6 +245,10 @@ function App() {
   }
 
   async function indexRag() {
+    if (!textbooks.length || textbooks.some((book) => !book.full_ready)) {
+      setError("RAG 索引需要等待所有教材完成全量解析。");
+      return;
+    }
     const result = await run("提交索引任务", () => api.indexRag());
     if (result) {
       trackTask(result.task);
@@ -318,6 +338,7 @@ function App() {
     const visibleIds = new Set(visibleNodes.map((node) => node.id));
     return graphEdges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target));
   }, [graphEdges, visibleNodes]);
+  const allTextbooksFullReady = textbooks.length > 0 && textbooks.every((book) => book.full_ready);
 
   return (
     <main className="app-shell">
@@ -356,15 +377,18 @@ function App() {
               <div>
                 <strong>{book.title}</strong>
                 <span>{book.format.toUpperCase()} · {Math.round(book.size_bytes / 1024)} KB · {book.total_chars} 字</span>
+                <span>{parseStatusLabel(book)}</span>
                 <span>章节 {book.chapter_count || 0}</span>
                 <span>图谱 {book.graph_node_count || 0} 节点 / {book.graph_edge_count || 0} 边</span>
                 <span className={`status ${book.status}`}>{book.status}</span>
                 {book.error && <span className="row-error">{book.error}</span>}
+                {book.full_parse_error && <span className="row-error">全量解析失败：{book.full_parse_error}</span>}
+                {book.graph_stale_after_full_parse && <span className="status-warning">全量解析已更新，请重建图谱</span>}
               </div>
               <div className="row-actions">
                 <button
                   onClick={() => buildGraph(book.id)}
-                  disabled={book.status !== "completed" || !!activeTaskFor("build_graph", book.id) || !!activeTaskFor("parse_textbook", book.id)}
+                  disabled={!book.preview_ready || (graphBuildMode === "full" && !book.full_ready) || !!activeTaskFor("build_graph", book.id) || !!activeTaskFor("preview_parse_textbook", book.id)}
                   aria-label="构建图谱"
                 >
                   <Play size={16} />
@@ -401,7 +425,7 @@ function App() {
           </div>
           <button onClick={integrate} disabled={!!activeTaskFor("run_integration")}><GitMerge size={16} />跨教材整合</button>
           <button onClick={showIntegrationGraph} disabled={!integration?.nodes.length}><Network size={16} />显示整合图谱</button>
-          <button onClick={indexRag} disabled={!!activeTaskFor("build_rag_index")}><FileText size={16} />建立 RAG 索引</button>
+          <button onClick={indexRag} disabled={!allTextbooksFullReady || !!activeTaskFor("build_rag_index")}><FileText size={16} />建立 RAG 索引</button>
         </div>
         <div className="graph-status">
           <div>
@@ -418,6 +442,7 @@ function App() {
             </span>
           )}
           {graphQuality && <span className={graphQuality.kind === "warning" ? "status-warning" : "status-ok"}>{graphQuality.label}</span>}
+          {!allTextbooksFullReady && textbooks.some((book) => book.preview_ready) && <span className="status-warning">全量解析完成前，RAG 索引暂不可用。</span>}
         </div>
         <div className="workspace-messages">
           {error && <div role="alert" className="error-bar">{error}</div>}
@@ -549,10 +574,32 @@ function tabLabel(tab: Tab) {
   }[tab];
 }
 
+function parseStatusLabel(book: Textbook) {
+  if (book.full_ready) {
+    return "全量解析完成";
+  }
+  if (book.preview_ready && book.parse_stage === "full_failed") {
+    return "可预览 · 全量解析失败";
+  }
+  if (book.preview_ready) {
+    return "可预览 · 全量解析中";
+  }
+  if (book.parse_stage === "failed" || book.status === "failed") {
+    return "解析失败";
+  }
+  return "预览解析中";
+}
+
 function describeGraphQuality(metrics: GraphView["metrics"], nodes: KnowledgeNode[]) {
   if (metrics?.processed_chapters) {
     const fastChapters = metrics.fast_chapters ?? metrics.fallback_chapters ?? 0;
     const llmChapters = metrics.llm_chapters ?? Math.max((metrics.processed_chapters || 0) - fastChapters, 0);
+    if (metrics.low_quality_without_llm) {
+      return { kind: "warning", label: `未配置 LLM：当前为低质量关键词图谱，快速抽取 ${fastChapters}/${metrics.processed_chapters} 章` };
+    }
+    if (metrics.stale_after_full_parse) {
+      return { kind: "warning", label: "该图谱基于预览章节生成，全量解析完成后需要重建" };
+    }
     if (fastChapters > 0) {
       return { kind: "warning", label: `已处理 ${metrics.processed_chapters} 章，LLM ${llmChapters} 章 / 快速抽取 ${fastChapters} 章` };
     }

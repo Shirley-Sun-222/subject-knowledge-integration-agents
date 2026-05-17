@@ -19,6 +19,25 @@ ParseProgress = Callable[[str, int, int], None]
 TOP_LEVEL_CHAPTER_RE = re.compile(r"^(第\s*[一二三四五六七八九十百千万0-9IVXivx]+\s*章\b.*|Chapter\s+\d+\b.*)$", re.IGNORECASE)
 
 
+def parse_textbook_preview(path: Path, filename: str, progress: ParseProgress | None = None) -> dict:
+    suffix = path.suffix.lower()
+    if suffix == ".pdf":
+        parsed = _parse_pdf_preview(path, progress=progress)
+        title = Path(filename).stem
+        chapters = parsed.get("chapters") or split_chapters(parsed["text"], title=title, total_pages=parsed["total_pages"])[: settings.preview_parse_chapters]
+        return {
+            "filename": filename,
+            "title": title,
+            "format": suffix.replace(".", ""),
+            "total_pages": parsed["total_pages"],
+            "total_chars": sum(chapter["char_count"] for chapter in chapters),
+            "chapters": chapters,
+            "parse_scope": "preview",
+        }
+    parsed = parse_textbook(path, filename, progress=progress)
+    return {**parsed, "parse_scope": "full"}
+
+
 def parse_textbook(path: Path, filename: str, progress: ParseProgress | None = None) -> dict:
     suffix = path.suffix.lower()
     if suffix == ".pdf":
@@ -45,6 +64,7 @@ def parse_textbook(path: Path, filename: str, progress: ParseProgress | None = N
         "total_pages": parsed["total_pages"],
         "total_chars": sum(chapter["char_count"] for chapter in chapters),
         "chapters": chapters,
+        "parse_scope": "full",
     }
 
 
@@ -71,11 +91,15 @@ def _parse_pdf(path: Path, progress: ParseProgress | None = None) -> dict:
         raise ParseError("PyMuPDF is required to parse PDF files") from exc
 
     document = fitz.open(path)
-    total_pages = max(1, len(document))
-    toc_spans = _extract_top_level_toc_spans(document, total_pages)
-    mode = _detect_pdf_mode(document, progress)
+    try:
+        total_pages = max(1, len(document))
+        toc_spans = _extract_top_level_toc_spans(document, total_pages)
+        mode = _detect_pdf_mode(document, progress)
+    finally:
+        document.close()
+    page_indices = list(range(total_pages))
     pages = _extract_page_texts(path, total_pages, progress)
-    ocr_targets = _ocr_target_indices(mode, pages)
+    ocr_targets = _ocr_target_indices_for_pages(mode, pages, page_indices, settings.ocr_max_pages)
     if ocr_targets:
         ocr_pages = _extract_ocr_texts(path, ocr_targets, progress)
         for page_index, ocr_text in ocr_pages.items():
@@ -83,13 +107,47 @@ def _parse_pdf(path: Path, progress: ParseProgress | None = None) -> dict:
                 pages[page_index] = ocr_text
     text = normalize_space("\n\n".join(pages))
     if len(text) < 20:
-        hint = "PDF has no extractable text"
-        if settings.ocr_enabled:
-            hint += "; OCR did not produce usable text. Check tesseract language data and OCR_MAX_PAGES."
-        else:
-            hint += "; enable OCR_ENABLED=1 for scanned PDFs."
-        raise ParseError(hint)
+        _raise_empty_pdf_error()
     chapters = _chapters_from_toc_pages(toc_spans, pages, total_pages) if toc_spans else None
+    return {"text": text, "total_pages": total_pages, "chapters": chapters}
+
+
+def _parse_pdf_preview(path: Path, progress: ParseProgress | None = None) -> dict:
+    try:
+        import fitz
+    except Exception as exc:  # pragma: no cover - optional dependency branch
+        raise ParseError("PyMuPDF is required to parse PDF files") from exc
+
+    document = fitz.open(path)
+    try:
+        total_pages = max(1, len(document))
+        toc_spans = _extract_top_level_toc_spans(document, total_pages)
+        mode = _detect_pdf_mode(document, progress)
+    finally:
+        document.close()
+
+    selected_spans = toc_spans[: settings.preview_parse_chapters] if toc_spans else []
+    if selected_spans:
+        page_indices = _preview_page_indices_from_toc(selected_spans, total_pages)
+    else:
+        page_budget = settings.preview_parse_chapters * settings.preview_parse_pages_per_chapter
+        page_indices = list(range(min(total_pages, page_budget)))
+
+    pages = _extract_selected_page_texts(path, page_indices, "reading_pdf_preview_pages", progress)
+    ocr_targets = _ocr_target_indices_for_pages(mode, pages, page_indices, settings.preview_ocr_max_pages)
+    if ocr_targets:
+        ocr_pages = _extract_ocr_texts(path, ocr_targets, progress)
+        index_to_position = {page_index: position for position, page_index in enumerate(page_indices)}
+        for page_index, ocr_text in ocr_pages.items():
+            position = index_to_position[page_index]
+            if len(normalize_space(ocr_text)) > len(normalize_space(pages[position])):
+                pages[position] = ocr_text
+
+    page_text_by_number = {page_index + 1: pages[position] for position, page_index in enumerate(page_indices)}
+    text = normalize_space("\n\n".join(pages))
+    if len(text) < 20:
+        _raise_empty_pdf_error()
+    chapters = _preview_chapters_from_toc(selected_spans, page_text_by_number, total_pages) if selected_spans else None
     return {"text": text, "total_pages": total_pages, "chapters": chapters}
 
 
@@ -109,6 +167,15 @@ def _detect_pdf_mode(document, progress: ParseProgress | None = None) -> str:
     return "mixed"
 
 
+def _raise_empty_pdf_error() -> None:
+    hint = "PDF has no extractable text"
+    if settings.ocr_enabled:
+        hint += "; OCR did not produce usable text. Check tesseract language data and OCR_MAX_PAGES."
+    else:
+        hint += "; enable OCR_ENABLED=1 for scanned PDFs."
+    raise ParseError(hint)
+
+
 def _should_ocr_page(mode: str, page_text: str, page_index: int) -> bool:
     if not settings.ocr_enabled:
         return False
@@ -120,13 +187,19 @@ def _should_ocr_page(mode: str, page_text: str, page_index: int) -> bool:
 
 def _extract_page_texts(path: Path, total_pages: int, progress: ParseProgress | None = None) -> list[str]:
     indices = list(range(total_pages))
-    workers = _resolve_pdf_workers(settings.pdf_text_extract_workers, total_pages)
+    return _extract_selected_page_texts(path, indices, "reading_pdf_pages", progress)
+
+
+def _extract_selected_page_texts(path: Path, indices: list[int], phase: str, progress: ParseProgress | None = None) -> list[str]:
+    if not indices:
+        return []
+    workers = _resolve_pdf_workers(settings.pdf_text_extract_workers, len(indices))
     if workers == 1:
         pages = []
         for current, index in enumerate(indices, start=1):
             pages.append(_extract_single_page_text(path, index))
             if progress is not None:
-                progress("reading_pdf_pages", current, total_pages)
+                progress(phase, current, len(indices))
         return pages
 
     page_map: dict[int, str] = {}
@@ -141,7 +214,7 @@ def _extract_page_texts(path: Path, total_pages: int, progress: ParseProgress | 
             page_map.update(result)
             completed += len(result)
             if progress is not None:
-                progress("reading_pdf_pages", completed, total_pages)
+                progress(phase, completed, len(indices))
     return [page_map[index] for index in indices]
 
 
@@ -230,13 +303,54 @@ def _resolve_pdf_workers(configured: int, page_count: int) -> int:
 
 
 def _ocr_target_indices(mode: str, pages: list[str]) -> list[int]:
+    return _ocr_target_indices_for_pages(mode, pages, list(range(len(pages))), settings.ocr_max_pages)
+
+
+def _ocr_target_indices_for_pages(mode: str, pages: list[str], page_indices: list[int], max_pages: int) -> list[int]:
     if not settings.ocr_enabled:
         return []
+    targets: list[int]
     if mode == "digital":
-        return [index for index, text in enumerate(pages) if len(normalize_space(text)) == 0]
-    if mode == "scanned":
-        return list(range(len(pages)))
-    return [index for index, text in enumerate(pages) if len(normalize_space(text)) < 20]
+        targets = [page_indices[index] for index, text in enumerate(pages) if len(normalize_space(text)) == 0]
+    elif mode == "scanned":
+        targets = list(page_indices)
+    else:
+        targets = [page_indices[index] for index, text in enumerate(pages) if len(normalize_space(text)) < 20]
+    if max_pages <= 0:
+        return []
+    return targets[:max_pages]
+
+
+def _preview_page_indices_from_toc(toc_spans: list[dict[str, int | str]], total_pages: int) -> list[int]:
+    selected: list[int] = []
+    pages_per_chapter = max(settings.preview_parse_pages_per_chapter, 1)
+    for span in toc_spans[: settings.preview_parse_chapters]:
+        start = max(1, int(span["page_start"]))
+        end = min(int(span["page_end"]), total_pages, start + pages_per_chapter - 1)
+        selected.extend(range(start - 1, end))
+    return sorted(set(selected))
+
+
+def _preview_chapters_from_toc(toc_spans: list[dict[str, int | str]], page_text_by_number: dict[int, str], total_pages: int) -> list[dict[str, int | str]] | None:
+    chapters = []
+    pages_per_chapter = max(settings.preview_parse_pages_per_chapter, 1)
+    for position, span in enumerate(toc_spans[: settings.preview_parse_chapters], start=1):
+        page_start = max(1, int(span["page_start"]))
+        page_end = min(int(span["page_end"]), total_pages, page_start + pages_per_chapter - 1)
+        chapter_text = normalize_space("\n\n".join(page_text_by_number.get(page, "") for page in range(page_start, page_end + 1)))
+        if len(chapter_text) < 20:
+            continue
+        chapters.append(
+            {
+                "title": str(span["title"]),
+                "page_start": page_start,
+                "page_end": page_end,
+                "content": chapter_text,
+                "char_count": len(chapter_text),
+                "position": position,
+            }
+        )
+    return chapters or None
 
 
 def _extract_top_level_toc_spans(document, total_pages: int) -> list[dict[str, int | str]]:
